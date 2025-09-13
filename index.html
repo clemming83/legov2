@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LEGO Batman – Voxel Builder (Deluxe, Fixed)</title>
+    <title>LEGO Batman – Voxel Builder (Stable, no-drei)</title>
     <style>
       html, body, #root { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#000; color:#fff; }
       .button { padding:8px 12px; border-radius:12px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.2); color:white; cursor:pointer; }
@@ -31,13 +31,11 @@
     </script>
 
     <script type="module">
-      // Pinned & bundled CDN imports
       import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
       import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
       import * as THREE from "https://esm.sh/three@0.160.0";
       import { Canvas, useFrame, useThree } from "https://esm.sh/@react-three/fiber@8.15.16?bundle&deps=react@18.3.1,react-dom@18.3.1,three@0.160.0";
-      import { motion as Motion, AnimatePresence } from "https://esm.sh/framer-motion@11.0.0";
-      import { Sky, Stars, PointerLockControls } from "https://esm.sh/@react-three/drei@9.92.7?deps=react@18.3.1,react-dom@18.3.1,three@0.160.0";
+
       // ---------- Utils ----------
       const keyState = new Map();
       const setKey = (code, down) => keyState.set(code.toLowerCase(), down);
@@ -65,6 +63,37 @@
             React.createElement('planeGeometry',{args:[size, size, size, size]}),
             React.createElement('meshStandardMaterial',{color:"#2a2a2d"})
           )
+        );
+      }
+
+      function GradientSky() {
+        const { scene, gl } = useThree();
+        useEffect(() => {
+          // enkel gradient baggrund via renderer clear color
+          gl.setClearColor(new THREE.Color(0x06080f)); // mørk blå/sort
+        }, [gl, scene]);
+        return null;
+      }
+
+      function StarsSimple({ count = 500 }) {
+        const ref = useRef();
+        const positions = useMemo(() => {
+          const arr = new Float32Array(count * 3);
+          for (let i=0;i<count;i++){
+            const r = 80 + Math.random()*120;
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2*Math.random()-1);
+            arr[i*3+0] = r * Math.sin(phi) * Math.cos(theta);
+            arr[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+            arr[i*3+2] = r * Math.cos(phi);
+          }
+          return arr;
+        }, [count]);
+        return React.createElement('points',{ref},
+          React.createElement('bufferGeometry',null,
+            React.createElement('bufferAttribute',{attach:"attributes-position", array:positions, itemSize:3, count:positions.length/3})
+          ),
+          React.createElement('pointsMaterial',{size:0.5, sizeAttenuation:true, color:"#9fc9ff"})
         );
       }
 
@@ -149,14 +178,14 @@
       }
 
       // ---------- Player ----------
-      function PlayerController({ positionRef, blocks, firstPerson }){
+      function PlayerController({ positionRef, blocks }){
         const ref = useRef(null);
         const vel = useRef(vec3(0,0,0));
         const onGround = useRef(true);
 
         useEffect(() => {
           const onKeyDown = (e) => {
-            if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," ","w","a","s","d","b","1","2","3","4","5","6","7","8","9","f1","q","e"].includes(e.key.toLowerCase()) || e.key === " ") {
+            if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," ","w","a","s","d","b","1","2","3","4","5","6","7","8","9","q","e"].includes(e.key.toLowerCase()) || e.key === " ") {
               e.preventDefault();
             }
             setKey(e.key, true);
@@ -178,12 +207,10 @@
           if (isDown("arrowleft") || isDown("a")) strafe -= 1;
           if (isDown("arrowright") || isDown("d")) strafe += 1;
 
-          if (!firstPerson){
-            if (isDown("arrowleft") && !isDown("a")) currentYaw += 1.5 * dt;
-            if (isDown("arrowright") && !isDown("d")) currentYaw -= 1.5 * dt;
-          }
+          // drej kamera (3rd person) med venstre/højre piletaster
+          if (isDown("arrowleft") && !isDown("a")) currentYaw += 1.5 * dt;
+          if (isDown("arrowright") && !isDown("d")) currentYaw -= 1.5 * dt;
 
-          // Retning baseret på yaw (3rd person) eller kamera (1st person styres af pointer lock)
           const yaw = currentYaw;
           const dir = new THREE.Vector3(strafe, 0, -forward);
           if (dir.lengthSq()>0) dir.normalize();
@@ -203,36 +230,30 @@
 
           p.x = resolved.x; p.y = resolved.y; p.z = resolved.z;
 
-          if (ref.current) { ref.current.position.set(p.x, p.y, p.z); if (!firstPerson) ref.current.rotation.y = yaw; }
+          if (ref.current) { ref.current.position.set(p.x, p.y, p.z); ref.current.rotation.y = yaw; }
         });
 
         return React.createElement('group',{ref},
-          !firstPerson && React.createElement(BatmanMinifig,{position:[0,0,0]})
+          React.createElement(BatmanMinifig,{position:[0,0,0]})
         );
       }
 
-      // ---------- Camera rig (1st/3rd person) ----------
-      function CameraRig({ playerPosRef, firstPerson }){
+      // ---------- Camera (3rd person) ----------
+      function CameraRig({ playerPosRef }){
         const { camera } = useThree();
         useFrame(() => {
           const p = playerPosRef.current;
-          if (firstPerson){
-            // 1st person: hovedhøjde
-            camera.position.set(p.x, p.y + 1.6, p.z);
-          } else {
-            // 3rd person: offset bagved og lidt oppe
-            const offset = new THREE.Vector3(0, 1.8, 4).applyAxisAngle(new THREE.Vector3(0,1,0), currentYaw);
-            const target = new THREE.Vector3(p.x, p.y + 0.9, p.z);
-            const desired = target.clone().add(offset);
-            camera.position.lerp(desired, 0.18);
-            camera.lookAt(target);
-          }
+          const offset = new THREE.Vector3(0, 1.8, 4).applyAxisAngle(new THREE.Vector3(0,1,0), currentYaw);
+          const target = new THREE.Vector3(p.x, p.y + 0.9, p.z);
+          const desired = target.clone().add(offset);
+          camera.position.lerp(desired, 0.18);
+          camera.lookAt(target);
         });
         return null;
       }
 
       // ---------- Build / Raycast ----------
-      function RaycastPlacer({ mode, blocks, setBlocks }){
+      function RaycastPlacer({ mode, blocks, setBlocks, getSelected }){
         const { camera, gl, scene } = useThree();
         const raycaster = useMemo(()=> new THREE.Raycaster(), []);
         const pointer = useMemo(()=> new THREE.Vector2(), []);
@@ -243,16 +264,6 @@
           return () => gl.domElement.removeEventListener("contextmenu", onContext);
         }, [gl]);
 
-        const getSelected = (hotbar, selected) => hotbar[selected] ?? "black";
-
-        // Vi læser hotbar/selected fra DOM via dataset (simpelt trick uden prop drilling)
-        function currentSelection(){
-          const root = document.getElementById('root');
-          const hotbar = (root.dataset.hotbar || "").split(",");
-          const selected = parseInt(root.dataset.selected || "0", 10) || 0;
-          return getSelected(hotbar, selected);
-        }
-
         const handlePointerDown = (e) => {
           if (mode !== "build") return;
           const rect = gl.domElement.getBoundingClientRect();
@@ -260,16 +271,16 @@
           pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
           raycaster.setFromCamera(pointer, camera);
 
-          // Saml kandidat-objekter (block groups)
           const blockMeshes = [];
           scene.traverse(obj => {
-            if (obj.type === "Group" && obj.children?.length) blockMeshes.push(obj);
+            if (obj.geometry && obj.type === "Mesh" && obj.parent && obj.parent.type === "Group") {
+              if (obj.parent.children.length >= 1 && obj.parent.position) blockMeshes.push(obj.parent);
+            }
           });
 
           const intersectsBlocks = raycaster.intersectObjects(blockMeshes, true);
 
           if (e.button === 2) {
-            // Højreklik = fjern
             if (intersectsBlocks.length > 0) {
               const parent = intersectsBlocks[0].object.parent;
               const pos = parent.position;
@@ -278,28 +289,24 @@
               return;
             }
           } else {
-            // Venstreklik = placer
             if (intersectsBlocks.length > 0) {
               const hit = intersectsBlocks[0];
               const normal = hit.face?.normal?.clone() ?? new THREE.Vector3(0,1,0);
               const worldNormal = normal.applyMatrix3(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld)).normalize();
               const place = hit.point.clone().add(worldNormal.multiplyScalar(0.5)).floor().addScalar(0.5);
               const key = toKey(Math.round(place.x), Math.round(place.y), Math.round(place.z));
-              const sel = currentSelection();
-              setBlocks(prev => { const m = new Map(prev); if (!m.has(key)) m.set(key, { pos: [Math.round(place.x),Math.round(place.y),Math.round(place.z)], type: sel }); return m; });
+              setBlocks(prev => { const m = new Map(prev); if (!m.has(key)) m.set(key, { pos: [Math.round(place.x),Math.round(place.y),Math.round(place.z)], type: getSelected() }); return m; });
               return;
             }
           }
 
-          // Ground
           const ground = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
           const intersection = new THREE.Vector3();
           raycaster.ray.intersectPlane(ground, intersection);
           if (intersection) {
             const place = intersection.clone().add(new THREE.Vector3(0,0.5,0)).floor().addScalar(0.5);
             const key = toKey(Math.round(place.x), Math.round(place.y), Math.round(place.z));
-            const sel = currentSelection();
-            setBlocks(prev => { const m = new Map(prev); if (!m.has(key)) m.set(key, { pos: [Math.round(place.x), Math.round(place.y), Math.round(place.z)], type: sel }); return m; });
+            setBlocks(prev => { const m = new Map(prev); if (!m.has(key)) m.set(key, { pos: [Math.round(place.x), Math.round(place.y), Math.round(place.z)], type: getSelected() }); return m; });
           }
         };
 
@@ -312,7 +319,7 @@
         return null;
       }
 
-      // ---------- BatarangSystem (inde i Canvas) ----------
+      // ---------- Batarang System ----------
       function BatarangSystem({ blocks, setBlocks }){
         const { camera } = useThree();
         const [bats, setBats] = useState([]);
@@ -381,43 +388,34 @@
 
       function Sidebar({ open, setOpen }){
         useEffect(() => { const onKey = (e) => { if (e.key.toLowerCase() === "b") setOpen(v => !v); }; window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey); }, [setOpen]);
-        return React.createElement(AnimatePresence, null,
-          open && React.createElement(Motion.div, {
-            initial:{ x: -320, opacity: 0 },
-            animate:{ x: 0, opacity: 1 },
-            exit:{ x: -320, opacity: 0 },
-            transition:{ type: "spring", damping: 20, stiffness: 240 },
-            className: 'sidebar'
-          },
-            React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}},
-              React.createElement('h2',{style:{fontSize:16,fontWeight:600}},'Klodser'),
-              React.createElement('button',{className:'button',onClick:()=>setOpen(false)},'Luk (B)')
-            ),
-            React.createElement('div',{className:'palette'},
-              BLOCK_TYPES.map(bt => React.createElement('div',{key:bt.id,className:'palette-item'},
-                React.createElement('div',{style:{width:24,height:24,borderRadius:6,background:bt.color,opacity:bt.opacity ?? 1}}),
-                React.createElement('div',{style:{fontSize:13}},bt.label)
-              ))
-            ),
-            React.createElement('hr',{style:{borderColor:"rgba(255,255,255,.1)", margin:"16px 0"}}),
-            React.createElement('p',{style:{fontSize:12,opacity:.7}},'Tip: 1–9 vælger blok • Højreklik fjerner • Venstreklik placerer • Q skifter tilstand • E kaster batarang • F1: 1st/3rd person (klik i canvas for at låse musen)')
-          )
-        );
+        return open ? React.createElement('div',{className:'sidebar'},
+          React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}},
+            React.createElement('h2',{style:{fontSize:16,fontWeight:600}},'Klodser'),
+            React.createElement('button',{className:'button',onClick:()=>setOpen(false)},'Luk (B)')
+          ),
+          React.createElement('div',{className:'palette'},
+            BLOCK_TYPES.map(bt => React.createElement('div',{key:bt.id,className:'palette-item'},
+              React.createElement('div',{style:{width:24,height:24,borderRadius:6,background:bt.color,opacity:bt.opacity ?? 1}}),
+              React.createElement('div',{style:{fontSize:13}},bt.label)
+            ))
+          ),
+          React.createElement('hr',{style:{borderColor:"rgba(255,255,255,.1)", margin:"16px 0"}}),
+          React.createElement('p',{style:{fontSize:12,opacity:.7}},'Tip: 1–9 vælger blok • Højreklik fjerner • Venstreklik placerer • Q: Byg/Gadget • E: Batarang')
+        ) : null;
       }
 
-      // ---------- App (DEFINERET) ----------
+      // ---------- App ----------
       function App(){
         const [blocks, setBlocks] = useState(() => {
           const m = new Map();
           for (let x=-6; x<=6; x++) for (let z=-6; z<=6; z++) m.set(`${x}|0|${z}`, { pos:[x,0,z], type: (x+z)%2===0?"darkgray":"lightgray" });
-          for (let y=1; y<4; y++) m.set(`2|${y}|2`, { pos:[2,y,2], type: "yellow" });
+        for (let y=1; y<4; y++) m.set(`2|${y}|2`, { pos:[2,y,2], type: "yellow" });
           return m;
         });
         const [hotbar] = useState([...DEFAULT_HOTBAR]);
         const [selected, setSelected] = useState(0);
         const [sidebarOpen, setSidebarOpen] = useState(true);
         const [mode, setMode] = useState("build");
-        const [firstPerson, setFirstPerson] = useState(false);
 
         // læg hotbar/selected i DOM dataset, så RaycastPlacer kan læse det uden prop-drill
         useEffect(() => {
@@ -431,52 +429,47 @@
 
         const playerPos = useRef(vec3(0,0.5,6));
 
-        // help overlay timeout
         const [showHelp, setShowHelp] = useState(true);
         useEffect(() => { const t = setTimeout(()=>setShowHelp(false), 6000); return () => clearTimeout(t); }, []);
         useEffect(() => {
-          const onKey = (e) => { const k = e.key.toLowerCase(); if (k === "q") setMode(m => m === "build" ? "gadget" : "build"); if (k === "f1") setFirstPerson(v=>!v); };
+          const onKey = (e) => { const k = e.key.toLowerCase(); if (k === "q") setMode(m => m === "build" ? "gadget" : "build"); };
           window.addEventListener("keydown", onKey);
           return () => window.removeEventListener("keydown", onKey);
         }, []);
 
+        const getSelected = () => hotbar[selected] ?? "black";
+
         return React.createElement('div',{style:{width:"100%",height:"100%",position:"relative",background:"#000"}},
           React.createElement(Canvas, { shadows:true, camera:{ position:[0,2,8], fov:60 } },
+            React.createElement(GradientSky,null),
+            React.createElement(StarsSimple,{count:800}),
             React.createElement('ambientLight',{intensity:0.6}),
             React.createElement('directionalLight',{position:[5,10,5], intensity:1.1, castShadow:true}),
-            React.createElement(Sky,{distance:450000, sunPosition:[0.5,1,0.25], turbidity:4, rayleigh:2, mieCoefficient:0.01, mieDirectionalG:0.9}),
-            React.createElement(Stars,{radius:100, depth:50, count:3000, factor:4, fade:true}),
             React.createElement(Ground,null),
             React.createElement(Blocks,{blocks}),
-            React.createElement(PlayerController,{positionRef:playerPos, blocks, firstPerson}),
-            React.createElement(CameraRig,{playerPosRef:playerPos, firstPerson}),
-            firstPerson && React.createElement(PointerLockControls,{selector:"#root"}),
-            React.createElement(RaycastPlacer,{mode, blocks, setBlocks}),
+            React.createElement(PlayerController,{positionRef:playerPos, blocks}),
+            React.createElement(CameraRig,{playerPosRef:playerPos}),
+            React.createElement(RaycastPlacer,{mode, blocks, setBlocks, getSelected}),
             React.createElement(BatarangSystem,{blocks, setBlocks})
           ),
           React.createElement('div',{className:'crosshair'}),
           React.createElement('div',{className:'topbar'},
             React.createElement('button',{className:'button', onClick:()=>setSidebarOpen(v=>!v)}, sidebarOpen?"Skjul":"Klodser (B)"),
             React.createElement('button',{className:'button', onClick:()=>setMode(m=>m==="build"?"gadget":"build")}, `Tilstand: ${mode==="build"?"Byg":"Gadget"} (Q)`),
-            React.createElement('button',{className:'button', onClick:()=>setFirstPerson(v=>!v)}, firstPerson?"3rd Person (F1)":"1st Person (F1)")
+            React.createElement('button',{className:'button', onClick:()=>setSelected(s=> (s+1)%9)}, 'Næste blok (↦)')
           ),
-          React.createElement(AnimatePresence, null,
-            showHelp && React.createElement(Motion.div, {
-              initial:{ opacity: 0, y: -6 },
-              animate:{ opacity: 1, y: 0 },
-              exit:{ opacity: 0, y: -6 },
-              className:'hint'
-            }, 'WASD/Pile: Bevæg • Space: Hop • B: Sidebar • 1–9: Vælg blok • Q: Byg/Gadget • E: Batarang • F1: First-person • Klik i canvas for at låse musen')
+          showHelp && React.createElement('div',{className:'hint'},
+            'WASD/Pile: Bevæg • Space: Hop • B: Sidebar • 1–9: Vælg blok • Q: Byg/Gadget • E: Batarang'
           ),
           React.createElement(Sidebar,{open:sidebarOpen, setOpen:setSidebarOpen}),
           React.createElement('div',{className:'title'},
-            React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Deluxe (CDN, pinned bundled)'),
+            React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Stable no-drei build'),
             React.createElement('div',{style:{color:"#fff", fontSize:18, fontWeight:600}},'LEGO Batman – Voxel Builder')
           )
         );
       }
 
-      // MOUNT
+      // Mount
       createRoot(document.getElementById('root')).render(React.createElement(App));
     </script>
   </body>
