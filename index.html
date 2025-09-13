@@ -3,16 +3,60 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>LEGO Batman – Voxel Builder (Safe v14)</title>
+    <title>LEGO Batman – Voxel Builder (Safe v14.1)</title>
     <style>
       html,body,#root{height:100%;margin:0;padding:0;background:#000;color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
       *{box-sizing:border-box}
       button{font:inherit}
+      #error-overlay{
+        position:fixed; inset:0; background:rgba(0,0,0,.85); color:#fff;
+        display:none; padding:16px; z-index:99999; overflow:auto; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      }
+      #error-overlay h3{margin:0 0 8px 0}
+      #error-overlay pre{white-space:pre-wrap; word-break:break-word; background:#111; padding:12px; border:1px solid #333; border-radius:8px}
     </style>
   </head>
   <body>
     <div id="root"></div>
+    <div id="error-overlay">
+      <h3>⚠️ Der skete en fejl</h3>
+      <div id="err-msg"></div>
+      <pre id="err-stack"></pre>
+      <button id="err-close" style="margin-top:8px;padding:8px 12px;border-radius:8px;border:1px solid #444;background:#222;color:#fff;cursor:pointer">Luk</button>
+    </div>
+    <script>
+      // Global fejl-opsamler → vis overlay i stedet for sort skærm
+      (function(){
+        const box = document.getElementById('error-overlay');
+        const em = document.getElementById('err-msg');
+        const st = document.getElementById('err-stack');
+        const show = (msg, stack) => {
+          em.textContent = msg || '(ukendt fejl)';
+          st.textContent = stack || '';
+          box.style.display = 'block';
+        };
+        window.addEventListener('error', e => {
+          show(String(e.message || e.error), e.error && e.error.stack);
+        });
+        window.addEventListener('unhandledrejection', e => {
+          const r = e.reason || {};
+          show(String(r.message || r), r.stack);
+        });
+        document.getElementById('err-close').onclick = ()=> box.style.display='none';
+        // Gør tilgængelig for game.js:
+        window.__showErrorOverlay = show;
+      })();
+    </script>
     <!-- Spillet (ESM) -->
-    <script type="module" src="./src/game.js"></script>
+    <script type="module">
+      (async () => {
+        try {
+          await import("./src/game.js");
+        } catch (e) {
+          console.error(e);
+          window.__showErrorOverlay?.(e.message, e.stack);
+        }
+      })();
+    </script>
   </body>
 </html>
