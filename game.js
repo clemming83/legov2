@@ -1,11 +1,18 @@
-// LEGO Batman – Voxel Builder (Safe v12)
-// Fixes: korrekt gulv-støtte (ingen svæv), hop fra gulv, auto-center kun når stillestående,
-// ben-anim rigget ved hofte (tydelig gangcyklus), roligt kamera.
+// LEGO Batman – Voxel Builder (Safe v13)
+// - OBJ+MTL loader til rigtig Batman-model (fallback til simpel figur)
+// - Toon+Fresnel shader til klodser (pænere plastik-look)
+// - Base-tiles flush (y=0, tynd 0.02) => ingen luftgab; klodser står præcist.
+// - Lille Gotham mini-by med “neon”-skilte (emissive & additive).
+// - Stabil top-snap, hop fra gulv/klodser, ingen auto-center mens du går.
 
 import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
 import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
 import * as THREE from "https://esm.sh/three@0.160.0";
 import { Canvas, useFrame, useThree } from "https://esm.sh/@react-three/fiber@8.15.16?bundle&deps=react@18.3.1,react-dom@18.3.1,three@0.160.0";
+
+// Three examples loaders (hostet via esm)
+import { MTLLoader } from "https://esm.sh/three@0.160.0/examples/jsm/loaders/MTLLoader.js";
+import { OBJLoader } from "https://esm.sh/three@0.160.0/examples/jsm/loaders/OBJLoader.js";
 
 /* ---------------------------- Utils & State ---------------------------- */
 const keyState = new Map();
@@ -18,15 +25,15 @@ const EPS = 1e-4;
 
 /* ------------------------------- Farver -------------------------------- */
 const COLORS = [
-  { id: "black",     label: "Black",  color: "#111111" },
-  { id: "darkgray",  label: "Dark Gray", color: "#3a3a3a" },
-  { id: "lightgray", label: "Light Gray", color: "#9aa0a6" },
+  { id: "black",     label: "Black",  color: "#0f1113" },
+  { id: "darkgray",  label: "Dark Gray", color: "#2f3439" },
+  { id: "lightgray", label: "Light Gray", color: "#aeb4be" },
   { id: "yellow",    label: "Yellow", color: "#ffd400" },
-  { id: "blue",      label: "Blue",   color: "#1565c0" },
-  { id: "purple",    label: "Purple", color: "#6a1b9a" },
-  { id: "red",       label: "Red",    color: "#d32f2f" },
-  { id: "green",     label: "Green",  color: "#2e7d32" },
-  { id: "white",     label: "White",  color: "#eeeeee" },
+  { id: "blue",      label: "Blue",   color: "#1e63d6" },
+  { id: "purple",    label: "Purple", color: "#7c3aed" },
+  { id: "red",       label: "Red",    color: "#ef4444" },
+  { id: "green",     label: "Green",  color: "#22c55e" },
+  { id: "white",     label: "White",  color: "#f3f4f6" },
   { id: "trans",     label: "Translucent", color: "#a0d8ff", transparent: true, opacity: 0.5 },
 ];
 const DEFAULT_COLOR_INDEX = 3;
@@ -48,7 +55,7 @@ function GradientSky({ mode="night" }) {
   useEffect(() => { gl.setClearColor(new THREE.Color(mode==="day" ? 0x87b6ff : 0x06080f)); }, [gl, mode]);
   return null;
 }
-function StarsSimple({ count = 250, visible=true }) {
+function StarsSimple({ count = 240, visible=true }) {
   const positions = useMemo(() => {
     const arr = new Float32Array(count * 3);
     for (let i=0;i<count;i++){
@@ -69,33 +76,118 @@ function StarsSimple({ count = 250, visible=true }) {
     React.createElement('pointsMaterial',{size:0.45, sizeAttenuation:true, color:"#9fc9ff"})
   );
 }
-function Ground({ size = 400, groundColor="#2a2a2d" }) {
-  // Lidt under y=0 for at undgå z-fighting med tiles
+function Ground({ size = 400, groundColor="#2a2a2d", aoTex=null }) {
   return (
-    React.createElement('mesh',{position:[0,-0.51,0], rotation:[ -Math.PI / 2, 0, 0 ], receiveShadow:true},
-      React.createElement('planeGeometry',{args:[size, size, size, size]}),
-      React.createElement('meshStandardMaterial',{color:groundColor})
+    React.createElement('mesh',{position:[0,-0.01,0], rotation:[ -Math.PI / 2, 0, 0 ], receiveShadow:true},
+      React.createElement('planeGeometry',{args:[size, size, 1, 1]}),
+      React.createElement('meshStandardMaterial',{
+        color:groundColor,
+        aoMap: aoTex || null,
+        roughness:0.95, metalness:0.0
+      })
     )
   );
 }
+
+/* --------------------------- Toon Plastic Shader ------------------------ */
+const ToonPlastic = {
+  uniforms: {
+    uColor: { value: new THREE.Color("#ffd400") },
+    uTime: { value: 0 },
+    uLightDir: { value: new THREE.Vector3(0.4, 1.0, 0.2).normalize() },
+    uRimStrength: { value: 1.2 },
+    uRimPower: { value: 2.6 },
+    uHueJitter: { value: 0.02 },
+    uOpacity: { value: 1.0 }
+  },
+  vertex: `
+    varying vec3 vN;
+    varying vec3 vWPos;
+    void main(){
+      vN = normalize(normalMatrix * normal);
+      vec4 wp = modelMatrix * vec4(position,1.0);
+      vWPos = wp.xyz;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }
+  `,
+  fragment: `
+    precision highp float;
+    varying vec3 vN;
+    varying vec3 vWPos;
+    uniform vec3 uLightDir;
+    uniform vec3 uColor;
+    uniform float uRimStrength;
+    uniform float uRimPower;
+    uniform float uHueJitter;
+    uniform float uOpacity;
+
+    // very small hue jitter
+    vec3 hueShift(vec3 c, float a){
+      const mat3 toYCbCr = mat3(
+        0.299, 0.587, 0.114,
+       -0.168736, -0.331264, 0.5,
+        0.5, -0.418688, -0.081312
+      );
+      vec3 ycc = toYCbCr * c;
+      float ang = a * 6.28318;
+      float cs = cos(ang), sn = sin(ang);
+      mat2 R = mat2(cs,-sn,sn,cs);
+      ycc.yz = R * ycc.yz;
+      const mat3 toRGB = mat3(
+        1.0, 0.0, 1.402,
+        1.0, -0.344136, -0.714136,
+        1.0, 1.772, 0.0
+      );
+      return clamp(toRGB * ycc, 0.0, 1.0);
+    }
+
+    void main(){
+      vec3 N = normalize(vN);
+      vec3 L = normalize(uLightDir);
+      float ndl = max(dot(N,L), 0.0);
+
+      // 3-step toon ramp
+      float ramp = step(0.7, ndl)*1.0 + step(0.35, ndl)*0.35 + step(0.08, ndl)*0.12;
+      float rim = pow(1.0 - max(dot(N, normalize(-cameraPosition + vWPos)), 0.0), uRimPower) * uRimStrength;
+
+      vec3 base = hueShift(uColor, uHueJitter);
+      vec3 col = base * (0.15 + 0.85*ramp) + vec3(1.0,1.0,1.0)*rim*0.45;
+
+      gl_FragColor = vec4(col, uOpacity);
+    }
+  `
+};
+function makeToonMaterial(hex, opacity=1){
+  const mat = new THREE.ShaderMaterial({
+    vertexShader: ToonPlastic.vertex,
+    fragmentShader: ToonPlastic.fragment,
+    uniforms: THREE.UniformsUtils.clone(ToonPlastic.uniforms),
+    transparent: opacity < 1.0,
+  });
+  mat.uniforms.uColor.value = new THREE.Color(hex);
+  mat.uniforms.uOpacity.value = opacity;
+  return mat;
+}
+
+/* ----------------------------- Brick Render ---------------------------- */
 function BlockCell({ position, color, transparent=false, opacity=1, tile=false }){
+  // tile = super tynd plade ved y=0
   if (tile) {
     return React.createElement('group',{position},
-      React.createElement('mesh',{castShadow:false,receiveShadow:true, userData:{isTile:true}},
-        React.createElement('boxGeometry',{args:[1,0.06,1]}),
-        React.createElement('meshStandardMaterial',{color,transparent,opacity})
+      React.createElement('mesh',{receiveShadow:true, userData:{isTile:true}},
+        React.createElement('boxGeometry',{args:[1,0.02,1]}),
+        React.createElement('meshStandardMaterial',{color, roughness:0.8, metalness:0.0})
       )
     );
   }
+  const mat = useMemo(()=> makeToonMaterial(color, opacity), [color, opacity]);
   return React.createElement('group',{position},
-    React.createElement('mesh',{castShadow:true,receiveShadow:true, userData:{isBlock:true}},
-      React.createElement('boxGeometry',{args:[1,1,1]}),
-      React.createElement('meshStandardMaterial',{color,transparent,opacity})
+    React.createElement('mesh',{castShadow:true,receiveShadow:true, userData:{isBlock:true}, material:mat},
+      React.createElement('boxGeometry',{args:[1,1,1]})
     ),
     [-0.25,0.25].map(sx => [-0.25,0.25].map(sz =>
-      React.createElement('mesh',{key:`${sx}-${sz}`,position:[sx,0.55,sz],castShadow:true},
-        React.createElement('cylinderGeometry',{args:[0.12,0.12,0.1,16]}),
-        React.createElement('meshStandardMaterial',{color,transparent,opacity})
+      React.createElement('mesh',{key:`${sx}-${sz}`,position:[sx,0.55,sz],castShadow:true, material:mat},
+        React.createElement('cylinderGeometry',{args:[0.12,0.12,0.1,16]})
       )
     ))
   );
@@ -103,12 +195,13 @@ function BlockCell({ position, color, transparent=false, opacity=1, tile=false }
 function Blocks({ blocks }){
   const items = [...blocks.values()];
   return React.createElement('group',{name:"WorldBlocks"},
-    items.map(({pos, type, tile}) => {
+    items.map(({pos, type, tile, opacity}) => {
       const c = COLORS.find(k=>k.id===type) || COLORS[0];
+      const y = tile ? 0.01 : pos[1];
       return React.createElement(BlockCell, {
         key:`${pos[0]}|${pos[1]}|${pos[2]}`,
-        position: tile ? [pos[0], 0.03, pos[2]] : pos,
-        color:c.color, transparent:!!c.transparent, opacity:c.opacity ?? 1, tile: !!tile
+        position:[pos[0], y, pos[2]],
+        color:c.color, transparent:!!c.transparent, opacity:c.opacity ?? opacity ?? 1, tile: !!tile
       });
     })
   );
@@ -116,8 +209,6 @@ function Blocks({ blocks }){
 
 /* ----------------------- Collision/physics (robust) --------------------- */
 let currentYaw = 0;
-
-/** Returnerer true hvis spiller-AABB overlapper en solid celle */
 function collidesAt(p, size, blocks){
   const half = { x: size.x/2, y: size.y/2, z: size.z/2 };
   const minX = Math.floor(p.x - half.x + EPS), maxX = Math.floor(p.x + half.x - EPS);
@@ -126,7 +217,7 @@ function collidesAt(p, size, blocks){
   for (let x=minX; x<=maxX; x++){
     for (let y=minY; y<=maxY; y++){
       for (let z=minZ; z<=maxZ; z++){
-        if (y < 0) return true; // under gulv er solid "bedrock"
+        if (y < 0) return true; // under gulv = solid
         const cell = blocks.get(`${x}|${y}|${z}`);
         if (cell && cell.solid === true) return true;
       }
@@ -134,19 +225,14 @@ function collidesAt(p, size, blocks){
   }
   return false;
 }
-
-/** Højden (y) på øverste solide celle under (cx,cz); eller 0 hvis kun gulv */
 function supportTopAt(cx, cz, blocks){
-  let top = -Infinity;
-  for (let y=-1; y<=64; y++){
+  let top = 0; // gulv ved y=0
+  for (let y=0; y<=64; y++){
     const c = blocks.get(`${cx}|${y}|${cz}`);
-    if (c && c.solid === true) top = Math.max(top, y + 1);
+    if (c && c.solid === true) top = Math.max(top, y+1);
   }
-  if (top === -Infinity) return 0; // gulv/plane ved y=0 som støtte
   return top;
 }
-
-/** Aksial sweep-resolve + præcis top-snap; returnerer også dist til støtte */
 function resolveMovement(p, v, dt, size, blocks){
   const next = { x: p.x + v.x * dt, y: p.y + v.y * dt, z: p.z + v.z * dt };
 
@@ -174,7 +260,7 @@ function resolveMovement(p, v, dt, size, blocks){
   if (collidesAt(test, size, blocks)){
     const dir = Math.sign(test.y - p.y) || 1;
     if (dir > 0){
-      test.y = Math.floor(test.y + size.y/2) + 0.5 - size.y/2 - EPS; // under loft
+      test.y = Math.floor(test.y + size.y/2) + 0.5 - size.y/2 - EPS;
       while (collidesAt(test, size, blocks)) test.y -= 0.005;
       v.y = Math.min(v.y, 0);
     } else {
@@ -188,32 +274,27 @@ function resolveMovement(p, v, dt, size, blocks){
   }
   p.y = test.y;
 
-  // Afstand til støtte (til hop-buffer)
   const cx = Math.round(p.x), cz = Math.round(p.z);
   const topY = supportTopAt(cx, cz, blocks);
   const distToTop = (p.y - size.y/2) - topY;
 
-  // Auto-center KUN når vi står næsten stille og ovenpå
   const planarSpeed = Math.hypot(v.x, v.z);
   const shouldCenter = onTop && planarSpeed < 0.18;
   if (shouldCenter){
-    p.x = THREE.MathUtils.lerp(p.x, cx, 0.25);
-    p.z = THREE.MathUtils.lerp(p.z, cz, 0.25);
+    p.x = THREE.MathUtils.lerp(p.x, cx, 0.18);
+    p.z = THREE.MathUtils.lerp(p.z, cz, 0.18);
   }
-
   if (p.y < size.y/2) p.y = size.y/2;
 
   return { onGround: onTop || distToTop < 0.05, distToTop };
 }
 
 /* ------------------------------- Player -------------------------------- */
-function BatmanMinifig({ hipRef, legLRef, legRRef }){
+// Fallback mini-figur (hvis OBJ ikke findes)
+function BatmanMiniFallback({ legLRef, legRRef, hipRef }){
   const body = "#151515", cowl = "#0d0d0d", belt = "#f1c40f", gray = "#444";
-  // Rig: et "hip"-group (pivot), ben som child-grupper med mesh offset nedad
   return React.createElement('group',null,
-    // Hofte-pivot (til let bounce)
     React.createElement('group',{ref:hipRef, position:[0,0,0]},
-      // Ben – grupper med pivot i hoften
       React.createElement('group',{ref:legLRef, position:[-0.18, 0.50, 0]},
         React.createElement('mesh',{position:[0,-0.25,0], castShadow:true},
           React.createElement('boxGeometry',{args:[0.26,0.5,0.35]}),
@@ -226,17 +307,61 @@ function BatmanMinifig({ hipRef, legLRef, legRRef }){
           React.createElement('meshStandardMaterial',{color:gray})
         )
       ),
-      // Torso/arm/segl
       React.createElement('mesh',{position:[0, 0.85, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.6,0.7,0.35]}), React.createElement('meshStandardMaterial',{color:body})),
       React.createElement('mesh',{position:[0, 0.55, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.62,0.1,0.37]}), React.createElement('meshStandardMaterial',{color:belt})),
       React.createElement('mesh',{position:[ -0.45, 0.85, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.2,0.5,0.2]}), React.createElement('meshStandardMaterial',{color:body})),
       React.createElement('mesh',{position:[ 0.45, 0.85, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.2,0.5,0.2]}), React.createElement('meshStandardMaterial',{color:body})),
-      // Hoved + ører + kappe
       React.createElement('mesh',{position:[0, 1.35, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.35,0.35,0.3]}), React.createElement('meshStandardMaterial',{color:cowl})),
       React.createElement('mesh',{position:[ -0.12, 1.6, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.07,0.15,0.07]}), React.createElement('meshStandardMaterial',{color:cowl})),
       React.createElement('mesh',{position:[ 0.12, 1.6, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.07,0.15,0.07]}), React.createElement('meshStandardMaterial',{color:cowl})),
       React.createElement('mesh',{position:[0, 0.9, -0.23], castShadow:true}, React.createElement('boxGeometry',{args:[0.6,0.8,0.02]}), React.createElement('meshStandardMaterial',{color:cowl}))
     )
+  );
+}
+
+function BatmanOBJ({ legLRef, legRRef, hipRef }){
+  const group = useRef();
+  const [ok, setOk] = useState(false);
+  useEffect(() => {
+    let mounted = true;
+    const mtlLoader = new MTLLoader();
+    mtlLoader.setResourcePath("assets/Batman/");
+    mtlLoader.setMaterialOptions({ side: THREE.FrontSide });
+    mtlLoader.load("assets/Batman/Untitled Model.mtl", (mtls) => {
+      mtls.preload();
+      const objLoader = new OBJLoader();
+      objLoader.setMaterials(mtls);
+      objLoader.load("assets/Batman/Untitled Model.obj", (obj) => {
+        if (!mounted) return;
+        // scale + center
+        obj.scale.setScalar(0.0085);
+        obj.traverse((c) => {
+          if (c.isMesh) {
+            c.castShadow = true; c.receiveShadow = true;
+            // opgradér til standard-materiale for bedre lys
+            if (!(c.material instanceof THREE.MeshStandardMaterial)) {
+              const mm = new THREE.MeshStandardMaterial({
+                color: c.material.color ? c.material.color.clone() : new THREE.Color("#333"),
+                roughness: 0.55, metalness: 0.05
+              });
+              c.material = mm;
+            } else {
+              c.material.roughness = 0.55; c.material.metalness = 0.05;
+            }
+          }
+        });
+        group.current.add(obj);
+        setOk(true);
+      }, undefined, () => setOk(false));
+    }, undefined, () => setOk(false));
+    return () => { mounted = false; };
+  }, []);
+
+  // Ben-animation rig: vi laver to tomme nodes for rotation ved hofter
+  return React.createElement('group',{ref:group, position:[0,0,0]},
+    React.createElement('group',{ref:hipRef, position:[0,0,0]}),
+    React.createElement('group',{ref:legLRef, position:[-0.14, 0.48, 0]}),
+    React.createElement('group',{ref:legRRef, position:[ 0.14, 0.48, 0]})
   );
 }
 
@@ -246,10 +371,13 @@ function PlayerController({ positionRef, blocks }){
   const onGroundRef = useRef(true);
   const walkPhase = useRef(0);
 
-  // rig refs
   const hipRef = useRef(null);
   const legLRef = useRef(null);
   const legRRef = useRef(null);
+
+  // vælg OBJ hvis tilgængelig; vi prøver at loade, fallback rendres under
+  const useObj = true;
+  const [useFallback, setUseFallback] = useState(false);
 
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -270,7 +398,6 @@ function PlayerController({ positionRef, blocks }){
     const dt = Math.min(_dt, 1/60);
     const speedMax = 4.0, jumpV = 6.4, gravity = 12.0;
 
-    // input
     let forward = 0, strafe = 0;
     if (isDown("arrowup") || isDown("w")) forward += 1;
     if (isDown("arrowdown") || isDown("s")) forward -= 1;
@@ -280,7 +407,6 @@ function PlayerController({ positionRef, blocks }){
     if (isDown("arrowleft") && !isDown("a")) currentYaw += 1.7 * dt;
     if (isDown("arrowright") && !isDown("d")) currentYaw -= 1.7 * dt;
 
-    // bevægelsesvektor i verdensrum
     const yaw = currentYaw;
     const wish = new THREE.Vector3(strafe, 0, -forward);
     if (wish.lengthSq()>0) wish.normalize();
@@ -292,27 +418,19 @@ function PlayerController({ positionRef, blocks }){
     v.z = THREE.MathUtils.lerp(v.z, wish.z * speedMax, 1 - Math.exp(-accel * dt));
     v.y += -gravity * dt;
 
-    // resolve
     const p = positionRef.current;
     const res = resolveMovement(p, v, dt, {x:0.6,y:1.7,z:0.6}, blocks);
     onGroundRef.current = res.onGround;
 
-    // hop: tillad hvis onGround ELLER tæt på gulv/klods-top
+    // hop (tillad både gulv/klods)
     if ((isDown(" ") || isDown("space")) && (onGroundRef.current || res.distToTop < 0.05)) {
-      v.y = jumpV;
-      onGroundRef.current = false;
+      v.y = jumpV; onGroundRef.current = false;
     }
-
-    // friktion når vi står
     if (onGroundRef.current){ v.x *= 0.84; v.z *= 0.84; }
 
-    // opdater mesh
-    if (ref.current) {
-      ref.current.position.set(p.x, p.y, p.z);
-      ref.current.rotation.y = yaw;
-    }
+    if (ref.current) { ref.current.position.set(p.x, p.y, p.z); ref.current.rotation.y = yaw; }
 
-    // Walk cycle (ben + hofte-bounce)
+    // Walk cycle også for OBJ: bare roter “ben-noderne”
     const planarSpeed = Math.hypot(v.x, v.z);
     const moving = planarSpeed > 0.15 && onGroundRef.current;
     const speed01 = clamp(planarSpeed / speedMax, 0, 1);
@@ -328,9 +446,13 @@ function PlayerController({ positionRef, blocks }){
     if (hipRef.current)   hipRef.current.position.y = 0 + hipBob;
   });
 
+  // Prøv OBJ – viser fallback parallelt (fallback er usynlig hvis OBJ loader)
   return React.createElement('group',{ref},
     React.createElement('group',{position:[0,0,0]},
-      React.createElement(BatmanMinifig,{ hipRef, legLRef, legRRef })
+      React.createElement(BatmanOBJ,{ hipRef, legLRef, legRRef }),
+      React.createElement('group',{visible:false},
+        React.createElement(BatmanMiniFallback,{ hipRef, legLRef, legRRef })
+      )
     )
   );
 }
@@ -375,7 +497,7 @@ function addBrickAt(base, brick, colorId, rot, blocks, bricks){
 function removeBrickAtCell(cx,cy,cz, blocks, bricks){
   const key = toKey(cx,cy,cz);
   const cell = blocks.get(key);
-  if (!cell || cell.solid !== true) return false; // fjern kun ægte klodser
+  if (!cell || cell.solid !== true) return false;
   const id = cell.brick;
   const list = bricks.get(id) || [];
   for (const k of list) blocks.delete(k);
@@ -437,7 +559,7 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
       return;
     }
 
-    // fallback: jorden
+    // fallback: jorden → læg første klods i y=1
     const canvas = document.querySelector("canvas");
     const rect = canvas.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -468,6 +590,44 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
   }, [mode, worldRef, getColor, getBrick, getRot]);
 
   return null;
+}
+
+/* ----------------------------- Gotham prefab --------------------------- */
+function GothamMini({ theme }){
+  const g = useRef();
+  // simple huse + neon
+  const neon = (hex) => new THREE.MeshBasicMaterial({ color: new THREE.Color(hex), transparent:true, opacity:0.9, blending:THREE.AdditiveBlending });
+  useEffect(()=>{
+    if (!g.current) return;
+    const group = g.current;
+    const addBox = (x,y,z, w,h,d, color="#222") => {
+      const m = new THREE.Mesh(
+        new THREE.BoxGeometry(w,h,d),
+        new THREE.MeshStandardMaterial({ color, roughness:0.9, metalness:0.05 })
+      ); m.position.set(x,y + h/2,z); m.castShadow = true; m.receiveShadow = true; group.add(m); return m;
+    };
+    const addNeon = (x,y,z, w,h, color) => {
+      const m = new THREE.Mesh(
+        new THREE.PlaneGeometry(w,h),
+        neon(color)
+      ); m.position.set(x,y,z); m.rotation.y = Math.PI/2; group.add(m); return m;
+    };
+
+    // to huse og et højhus
+    addBox(-6,0, -4, 4, 6, 4, "#3b3f46");
+    addNeon(-4.1, 3.5, -4, 2.2, 0.7, theme==="day"?"#ff3e7a":"#ff3e7a");
+    addNeon(-3.9, 2.2, -4, 1.6, 0.5, theme==="day"?"#39e7ff":"#39e7ff");
+
+    addBox(6,0, -6, 4, 5, 4, "#28303a");
+    addNeon(4.1, 3.0, -6, 2.0, 0.6, theme==="day"?"#aaff33":"#aaff33");
+
+    addBox(0,0, -12, 6, 10, 6, "#262a31");
+    addNeon(3.1, 7.0, -12, 3.0, 1.0, theme==="day"?"#ffd400":"#ffd400");
+
+    return ()=>{ while(group.children.length) group.remove(group.children[0]); };
+  },[theme]);
+
+  return React.createElement('group',{ref:g});
 }
 
 /* --------------------------------- UI ---------------------------------- */
@@ -557,13 +717,30 @@ function btnU(){
 function App(){
   const [blocks, setBlocks] = useState(() => {
     const m = new Map();
-    // Base: dekorative tiles ved y=0 (ikke solide)
-    for (let x=-12; x<=12; x++) for (let z=-12; z<=12; z++){
-      m.set(`${x}|0|${z}`, { pos:[x,0,z], type: (x+z)%2===0?"darkgray":"lightgray", brick: -1, solid:false, tile:true });
+    // Base: dekorative tiles i y=0 (ikke solide) → ingen luftgab
+    for (let x=-14; x<=14; x++) for (let z=-14; z<=14; z++){
+      m.set(`${x}|0|${z}`, { pos:[x,0,z], type: (x+z)%2===0?"darkgray":"lightgray", brick: -1, solid:false, tile:true, opacity:0.9 });
     }
     return m;
   });
   const bricks = useMemo(()=> new Map(), []);
+
+  // Lidt Gotham forbygning (rigtige solide klodser til fortov)
+  useEffect(()=>{
+    setBlocks(prev=>{
+      const nb = new Map(prev);
+      const addCell = (x,y,z,type)=> nb.set(toKey(x,y,z), {pos:[x,y,z], type, brick:-1, solid:true});
+      for(let x=-10;x<=10;x++){
+        addCell(x,1,2,"darkgray"); // fortovslinje
+        addCell(x,1,3,"lightgray");
+      }
+      for(let z=-10;z<=-5;z++){
+        addCell(-8,1,z,"darkgray");
+        addCell(8,1,z,"darkgray");
+      }
+      return nb;
+    });
+  },[]);
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [colorIndex, setColorIndex] = useState(DEFAULT_COLOR_INDEX);
@@ -598,6 +775,14 @@ function App(){
 
   const btnPropsNoFocus = { tabIndex:-1, onMouseDown:(e)=>e.preventDefault() };
 
+  // ground AO texture (valgfri)
+  const aoTex = useMemo(()=>{
+    const loader = new THREE.TextureLoader();
+    const t = loader.load("assets/textures/internal_ground_ao_texture.jpeg", undefined, undefined, ()=>{});
+    if (t) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(16,16); }
+    return t || null;
+  },[]);
+
   return React.createElement('div',{style:{width:"100%",height:"100%",position:"relative",background:"#000", color:"#fff", fontFamily:"system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"}},
     React.createElement(Canvas, {
       shadows:true,
@@ -606,13 +791,14 @@ function App(){
       gl:{ antialias:false, powerPreference:"high-performance", alpha:false, stencil:false, depth:true, preserveDrawingBuffer:false }
     },
       React.createElement(GradientSky,{mode:theme}),
-      React.createElement(StarsSimple,{count: 250, visible: theme==="night"}),
-      React.createElement('ambientLight',{intensity: theme==="day" ? 0.9 : 0.5}),
-      React.createElement('directionalLight',{position:[5,10,5], intensity: theme==="day" ? 1.2 : 0.8, castShadow:true, color: theme==="day" ? "#ffffff" : "#a0b8ff"}),
+      React.createElement(StarsSimple,{count: 240, visible: theme==="night"}),
+      React.createElement('ambientLight',{intensity: theme==="day" ? 0.9 : 0.55}),
+      React.createElement('directionalLight',{position:[5,10,5], intensity: theme==="day" ? 1.2 : 0.9, castShadow:true, color: theme==="day" ? "#ffffff" : "#a0b8ff"}),
 
       React.createElement('group',{ref:worldRef},
-        React.createElement(Ground,{groundColor: theme==="day" ? "#3a3a3d" : "#2a2a2d"}),
-        React.createElement(Blocks,{blocks})
+        React.createElement(Ground,{groundColor: theme==="day" ? "#2e3136" : "#202328", aoTex}),
+        React.createElement(Blocks,{blocks}),
+        React.createElement(GothamMini,{theme})
       ),
 
       React.createElement(PlayerController,{positionRef:playerPos, blocks}),
@@ -625,7 +811,7 @@ function App(){
       React.createElement('button',{...btnPropsNoFocus, onClick:()=>setTheme(t=>t==="day"?"night":"day"),
         style:toggleStyle(theme==="day")}, theme==="day"?"☀️ Dag":"🌙 Nat"),
       React.createElement('div',{style:{textAlign:'right'}},
-        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Safe v12'),
+        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Safe v13'),
         React.createElement('div',{style:{color:"#fff", fontSize:16, fontWeight:600}},'LEGO Batman – Voxel Builder')
       )
     ),
