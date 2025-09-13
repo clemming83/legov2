@@ -21,11 +21,22 @@
   <body>
     <div id="root"></div>
     <div id="err"></div>
-    <script>
-      const showErr = (msg) => { const el = document.getElementById('err'); el.style.display = 'block'; el.textContent = msg; };
-      window.addEventListener('error', e => showErr(String(e.error || e.message || e)));
-      window.addEventListener('unhandledrejection', e => showErr(String(e.reason || e)));
-    </script>
+<script type="module">
+  // Pinned, bundled CDN imports (esm.sh)
+  import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
+  import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
+  import * as THREE from "https://esm.sh/three@0.160.0";
+
+  // Bundle + deps = undgå dynamiske peer-imports i browseren
+  import { Canvas, useFrame, useThree } from "https://esm.sh/@react-three/fiber@8.15.16?bundle&deps=react@18.3.1,react-dom@18.3.1,three@0.160.0";
+  import { Sky, Stars, PointerLockControls } from "https://esm.sh/@react-three/drei@9.92.7?bundle&deps=react@18.3.1,react-dom@18.3.1,three@0.160.0,@react-three/fiber@8.15.16";
+  import { motion as Motion, AnimatePresence } from "https://esm.sh/framer-motion@11.0.0";
+
+  // --------- DIN EKSISTERENDE SPILKODE FORTSÆTTER HERUNDER ---------
+  // (bevar resten af din kode uændret: utils, Ground, Blocks, BatmanMinifig,
+  //  collision, PlayerController, FollowCamera3P, RaycastPlacer, useBatarangs,
+  //  BatarangMeshes, Hotbar, Sidebar, App, og createRoot(...).render(...))
+</script>
 
     <!-- Loader med CDN-fallback -->
     <script type="module">
