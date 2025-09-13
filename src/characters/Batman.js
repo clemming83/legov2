@@ -1,6 +1,9 @@
-// /src/characters/Batman.js
-// Batman-figur: loader OBJ+MTL, vender 180°, aligner fødder til collider,
-// og tvinger ansigt- og torso-teksturer. Fallback-minifig har ben-animation.
+// /src/characters/Batman.js  (v14.2 – safe mapping via names, no per-mesh bbox)
+// - Vender Batman 180°
+// - Fod-align mod spillerens collider (1.7h → 0.85 half)
+// - Mapper ansigt/torso teksturer ud fra materiale-/mesh-navne (ingen pr-mesh bbox)
+// - Robust mod manglende materialer/teksturer (fail-soft)
+// - Har fallback-minifig som game.js kan vise hvis OBJ/MTL fejler
 
 import React, { useEffect, useRef } from "https://esm.sh/react@18.3.1";
 import * as THREE from "https://esm.sh/three@0.160.0";
@@ -14,12 +17,15 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
     let mounted = true;
     const showErr = (m, s) => window.__showErrorOverlay?.(m, s);
 
-    // Forudlæs teksturer (ansigt + torso)
-    const texLoader = new THREE.TextureLoader();
-    const tFace  = texLoader.load("assets/Batman/textures/decoration/3626d783.png");
-    const tTorso = texLoader.load("assets/Batman/textures/decoration/3814d676.png");
-    if (tFace)  tFace.colorSpace  = THREE.SRGBColorSpace;
-    if (tTorso) tTorso.colorSpace = THREE.SRGBColorSpace;
+    // Forudlæs teksturer (fail-soft hvis de ikke findes)
+    let tFace = null, tTorso = null;
+    try {
+      const texLoader = new THREE.TextureLoader();
+      tFace  = texLoader.load("assets/Batman/textures/decoration/3626d783.png", undefined, undefined, ()=>{});
+      tTorso = texLoader.load("assets/Batman/textures/decoration/3814d676.png", undefined, undefined, ()=>{});
+      if (tFace)  tFace.colorSpace  = THREE.SRGBColorSpace;
+      if (tTorso) tTorso.colorSpace = THREE.SRGBColorSpace;
+    } catch { /* ignore */ }
 
     try {
       const mtlLoader = new MTLLoader();
@@ -37,77 +43,54 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
             (obj) => {
               if (!mounted) return;
               try {
-                // Standardize materialer + påfør face/torso-teksturer
+                // 1) Standardiser materialer (uden bbox-heuristik)
                 obj.traverse((c) => {
                   if (!c.isMesh) return;
                   c.castShadow = true; c.receiveShadow = true;
 
                   const baseMat = new THREE.MeshStandardMaterial({
                     color: (c.material?.color) ? c.material.color.clone() : new THREE.Color("#333"),
-                    roughness: 0.55, metalness: 0.05, transparent: false, opacity: 1.0, side: THREE.DoubleSide
+                    roughness: 0.55,
+                    metalness: 0.05,
+                    transparent: false,
+                    opacity: 1.0,
+                    side: THREE.DoubleSide
                   });
 
+                  // Navnematch fra materiale/mesh — juster ift. dine MTL/OBJ navne hvis du kan se dem i konsollen.
                   const mName = (c.material && c.material.name) ? c.material.name.toLowerCase() : "";
                   const name  = (c.name || "").toLowerCase();
 
-                  const taggedHead  = /head|face/.test(mName)  || /head|face/.test(name);
-                  const taggedTorso = /torso|body|chest/.test(mName) || /torso|body|chest/.test(name);
+                  const isHead  = /head|face|mask|helmet/.test(mName) || /head|face|mask|helmet/.test(name);
+                  const isTorso = /torso|body|chest/.test(mName) || /torso|body|chest/.test(name);
 
-                  if (!taggedHead && !taggedTorso) {
-                    // bbox-heuristik fallback
-                    c.geometry.computeBoundingBox?.();
-                    const bb = c.geometry.boundingBox;
-                    if (bb) {
-                      const size = new THREE.Vector3(); bb.getSize(size);
-                      const sx=size.x, sy=size.y, sz=size.z;
-                      const looksLikeHead =
-                        sy > 0.28 && sy < 0.48 &&
-                        Math.abs(sx - sy) < 0.2 && Math.abs(sz - sy) < 0.2;
-                      const looksLikeTorso =
-                        sy > 0.55 && sy < 0.95 &&
-                        sx > 0.45 && sx < 0.75 &&
-                        sz > 0.22 && sz < 0.48;
-
-                      if (looksLikeHead && tFace)  baseMat.map = tFace;
-                      else if (looksLikeTorso && tTorso) baseMat.map = tTorso;
-                    }
-                  } else {
-                    if (taggedHead && tFace)  baseMat.map = tFace;
-                    if (taggedTorso && tTorso) baseMat.map = tTorso;
-                  }
-
-                  if (baseMat.map) {
-                    baseMat.map.wrapS = baseMat.map.wrapT = THREE.ClampToEdgeWrapping;
-                    baseMat.map.needsUpdate = true;
+                  if (isHead && tFace) {
+                    baseMat.map = tFace; baseMat.map.needsUpdate = true;
+                  } else if (isTorso && tTorso) {
+                    baseMat.map = tTorso; baseMat.map.needsUpdate = true;
                   }
                   c.material = baseMat;
                 });
 
-                // Skaler til ~1.7 m høj
+                // 2) Skaler til ~1.7 høj
                 const box = new THREE.Box3().setFromObject(obj);
                 const size = new THREE.Vector3(); box.getSize(size);
-                const scale = (size.y > 0.0001) ? (1.7 / size.y) : 1.0;
+                const scale = (size.y > 1e-4) ? (1.7 / size.y) : 1.0;
                 obj.scale.setScalar(scale);
 
-                // *** FOD-ALIGN ***:
-                // Efter skalering måler vi ny boundingbox og flytter modellen så
-                // føddernes laveste punkt (minY) havner ved -colliderHalf (=-0.85)
-                // ift. forældre-gruppen (som står i spillerens center).
-                const box2   = new THREE.Box3().setFromObject(obj);
-                const min    = new THREE.Vector3(); box2.getMin(min);
-                const colliderHalf = 0.85; // (samme som i game.js: spillerhøjde 1.7 / 2)
+                // 3) Fod-align: brug samlet bbox (sikkert – ingen pr-mesh bbox)
+                const box2 = new THREE.Box3().setFromObject(obj);
+                const min = new THREE.Vector3(); box2.getMin(min);
+                const colliderHalf = 0.85; // spiller-collider halfHeight (1.7/2)
                 const deltaY = (-colliderHalf - min.y);
                 obj.position.y += deltaY;
 
-                // Vend 180°, så han kigger væk fra kameraet (–Z fremad i setup)
+                // 4) Vend 180°, så han kigger væk fra kameraet
                 obj.rotation.y = Math.PI;
 
-                // Parent OBJ under hofte (hipRef) → hofte-bob fra spillet animerer kroppen
-                if (hipRef?.current) {
-                  hipRef.current.add(obj);
-                } else {
-                  group.current?.add(obj);
-                }
+                // 5) Parent under hofte, så game.js’ hip-bob animerer kroppen
+                if (hipRef?.current) hipRef.current.add(obj);
+                else group.current?.add(obj);
               } catch (e) {
                 console.error("Batman OBJ post-process error", e);
                 showErr("Batman model post-process fejlede", e.stack);
@@ -116,7 +99,7 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
             undefined,
             (e) => {
               console.warn("OBJ load failed", e);
-              // Ikke fatal – game.js viser fallback-minifig hvis OBJ fejler.
+              // Ikke fatal – fallback-minifig håndteres i game.js
             }
           );
         } catch (e) {
@@ -127,7 +110,7 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
       undefined,
       (e) => {
         console.warn("MTL load failed", e);
-        // Ikke fatal – fallback håndteres i game.js
+        // Ikke fatal – fallback-minifig håndteres i game.js
       });
     } catch (e) {
       console.error("Batman loader fatal", e);
@@ -137,8 +120,7 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
     return () => { mounted = false; };
   }, []);
 
-  // Noder som game.js bruger til hofte/ben (ben-noder roteres i fallback;
-  // for OBJ giver hofte-noden stadig bob/gå-fornemmelse)
+  // Noder som game.js bruger til hofte/ben (OBJ får hofte-bob; minifig har ben-swing i game.js)
   return React.createElement('group',{ref:group, position:[0,0,0]},
     React.createElement('group',{ref:hipRef, position:[0,0,0]}),
     React.createElement('group',{ref:legLRef, position:[-0.14, 0.48, 0]}),
@@ -147,7 +129,6 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
 }
 
 export function BatmanMiniFallback({ hipRef, legLRef, legRRef }){
-  // Fallback-minifig med ben, som game.js animerer (swing + hofte-bob)
   const body = "#151515", cowl = "#0d0d0d", belt = "#f1c40f", gray = "#444";
   return React.createElement('group',null,
     React.createElement('group',{ref:hipRef, position:[0,0,0]},
