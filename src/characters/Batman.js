@@ -1,3 +1,7 @@
+// /src/characters/Batman.js
+// Batman-figur: loader OBJ+MTL og tvinger ansigts- og torso-teksturer.
+// Indeholder også en simpel fallback-minifig, som game.js kan bruge hvis OBJ ikke kan loades.
+
 import React, { useEffect, useRef } from "https://esm.sh/react@18.3.1";
 import * as THREE from "https://esm.sh/three@0.160.0";
 import { MTLLoader } from "https://esm.sh/three@0.160.0/examples/jsm/loaders/MTLLoader.js";
@@ -10,14 +14,12 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
     let mounted = true;
     const showErr = (m, s) => window.__showErrorOverlay?.(m, s);
 
-    // Forud-læs teksturer
+    // Forudlæs teksturer (ansigt + torso)
     const texLoader = new THREE.TextureLoader();
     const tFace  = texLoader.load("assets/Batman/textures/decoration/3626d783.png");
     const tTorso = texLoader.load("assets/Batman/textures/decoration/3814d676.png");
-    // Korrekt farverum til PBR i nyere three
     if (tFace)  tFace.colorSpace  = THREE.SRGBColorSpace;
     if (tTorso) tTorso.colorSpace = THREE.SRGBColorSpace;
-    // OBJ/UV’er bruger typisk flipY=true (default). Vi lader dem stå.
 
     try {
       const mtlLoader = new MTLLoader();
@@ -30,81 +32,105 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
           mtls.preload();
           const objLoader = new OBJLoader();
           objLoader.setMaterials(mtls);
-          objLoader.load("assets/Batman/Untitled Model.obj", (obj) => {
-            if (!mounted) return;
-            try {
-              // Tving materialer til Standard + sæt maps for head/torso via simple heuristik (størrelser)
-              obj.traverse((c) => {
-                if (!c.isMesh) return;
-                c.castShadow = true; c.receiveShadow = true;
+          objLoader.load(
+            "assets/Batman/Untitled Model.obj",
+            (obj) => {
+              if (!mounted) return;
+              try {
+                // Tving StandardMaterial + heuristisk mapping af face/torso teksturer
+                obj.traverse((c) => {
+                  if (!c.isMesh) return;
+                  c.castShadow = true; c.receiveShadow = true;
 
-                // Base standard-materiale
-                const baseMat = new THREE.MeshStandardMaterial({
-                  color: (c.material?.color) ? c.material.color.clone() : new THREE.Color("#333"),
-                  roughness: 0.55, metalness: 0.05, transparent: false, opacity: 1.0, side: THREE.DoubleSide
+                  const baseMat = new THREE.MeshStandardMaterial({
+                    color: (c.material?.color) ? c.material.color.clone() : new THREE.Color("#333"),
+                    roughness: 0.55,
+                    metalness: 0.05,
+                    transparent: false,
+                    opacity: 1.0,
+                    side: THREE.DoubleSide
+                  });
+
+                  // Prøv at bruge materialenavn fra MTL til mere præcis mapping
+                  const mName = (c.material && c.material.name) ? c.material.name.toLowerCase() : "";
+                  const name = (c.name || "").toLowerCase();
+
+                  // Heuristik: material/navn indeholder "head"/"face" → brug ansigtstekstur
+                  const taggedHead = /head|face/.test(mName) || /head|face/.test(name);
+                  // Heuristik: material/navn indeholder "torso|body|chest" → brug torso-tekstur
+                  const taggedTorso = /torso|body|chest/.test(mName) || /torso|body|chest/.test(name);
+
+                  // Fald tilbage til bbox-heuristik hvis navnene ikke afslører noget
+                  if (!taggedHead && !taggedTorso) {
+                    c.geometry.computeBoundingBox?.();
+                    const bb = c.geometry.boundingBox;
+                    if (bb) {
+                      const size = new THREE.Vector3();
+                      bb.getSize(size);
+                      const sx = size.x, sy = size.y, sz = size.z;
+                      const looksLikeHead =
+                        sy > 0.28 && sy < 0.48 &&
+                        Math.abs(sx - sy) < 0.2 && Math.abs(sz - sy) < 0.2;
+                      const looksLikeTorso =
+                        sy > 0.55 && sy < 0.95 &&
+                        sx > 0.45 && sx < 0.75 &&
+                        sz > 0.22 && sz < 0.48;
+
+                      if (looksLikeHead && tFace) {
+                        baseMat.map = tFace;
+                      } else if (looksLikeTorso && tTorso) {
+                        baseMat.map = tTorso;
+                      }
+                    }
+                  } else {
+                    if (taggedHead && tFace)  baseMat.map = tFace;
+                    if (taggedTorso && tTorso) baseMat.map = tTorso;
+                  }
+
+                  if (baseMat.map) {
+                    baseMat.map.wrapS = baseMat.map.wrapT = THREE.ClampToEdgeWrapping;
+                    baseMat.map.needsUpdate = true;
+                  }
+                  c.material = baseMat;
                 });
 
-                // Mål mesh'en for at gætte head/torso
-                c.geometry.computeBoundingBox?.();
-                const bb = c.geometry.boundingBox;
-                if (bb) {
-                  const size = new THREE.Vector3();
-                  bb.getSize(size);
-                  const sx = size.x, sy = size.y, sz = size.z;
+                // Skaler til ~1.7 høj
+                const box = new THREE.Box3().setFromObject(obj);
+                const size = new THREE.Vector3();
+                box.getSize(size);
+                const scale = (size.y > 0.0001) ? (1.7 / size.y) : 1.0;
+                obj.scale.setScalar(scale);
 
-                  // Heuristik: hoved ~ næsten kube, h ~0.3–0.45
-                  const looksLikeHead =
-                    sy > 0.28 && sy < 0.48 &&
-                    Math.abs(sx - sy) < 0.2 && Math.abs(sz - sy) < 0.2;
+                // Recenter (center.y -> 0.85)
+                const box2 = new THREE.Box3().setFromObject(obj);
+                const center = new THREE.Vector3();
+                box2.getCenter(center);
+                obj.position.y += (0.85 - center.y);
 
-                  // Heuristik: torso ~ rektangulær, h ~0.6–0.9, bredde ~0.5–0.7, dybde ~0.25–0.45
-                  const looksLikeTorso =
-                    sy > 0.55 && sy < 0.95 &&
-                    sx > 0.45 && sx < 0.75 &&
-                    sz > 0.22 && sz < 0.48;
+                // Vend 180° så Batman kigger væk fra kameraet (mod -Z fremad i vores setup)
+                obj.rotation.y = Math.PI;
 
-                  if (looksLikeHead && tFace) {
-                    baseMat.map = tFace;
-                    baseMat.needsUpdate = true;
-                  } else if (looksLikeTorso && tTorso) {
-                    baseMat.map = tTorso;
-                    baseMat.needsUpdate = true;
-                  }
-                }
-
-                c.material = baseMat;
-              });
-
-              // Skaler til ~1.7 høj
-              const box = new THREE.Box3().setFromObject(obj);
-              const size = new THREE.Vector3(); box.getSize(size);
-              const scale = (size.y > 0.0001) ? (1.7 / size.y) : 1.0;
-              obj.scale.setScalar(scale);
-
-              // Recenter (center.y -> 0.85)
-              const box2 = new THREE.Box3().setFromObject(obj);
-              const center = new THREE.Vector3(); box2.getCenter(center);
-              obj.position.y += (0.85 - center.y);
-
-              // Vend 180°, så han kigger væk fra kameraet
-              obj.rotation.y = Math.PI;
-
-              group.current?.add(obj);
-            } catch (e) {
-              console.error("Batman OBJ post-process error", e);
-              showErr("Batman model post-process fejlede", e.stack);
+                group.current?.add(obj);
+              } catch (e) {
+                console.error("Batman OBJ post-process error", e);
+                showErr("Batman model post-process fejlede", e.stack);
+              }
+            },
+            undefined,
+            (e) => {
+              console.warn("OBJ load failed", e);
+              // Ikke fatal – fallback-figur håndteres i game.js
             }
-          }, undefined, (e) => {
-            console.warn("OBJ load failed", e);
-            // Ikke fatal – fallback-figur vises fra game.js hvis nødvendig.
-          });
+          );
         } catch (e) {
           console.error("OBJ setup error", e);
           showErr("Batman loader fejlede under opsætning", e.stack);
         }
-      }, undefined, (e) => {
+      },
+      undefined,
+      (e) => {
         console.warn("MTL load failed", e);
-        // Ikke fatal – fallback-figur vises fra game.js hvis nødvendig.
+        // Ikke fatal – fallback-figur håndteres i game.js
       });
     } catch (e) {
       console.error("Batman loader fatal", e);
@@ -115,16 +141,6 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
   }, []);
 
   // Noder som game.js bruger til ben/hofte animation
-  return React.createElement('group',{ref:group, position:[0,0,0]},
-    React.createElement('group',{ref:hipRef, position:[0,0,0]}),
-    React.createElement('group',{ref:legLRef, position:[-0.14, 0.48, 0]}),
-    React.createElement('group',{ref:legRRef, position:[ 0.14, 0.48, 0]})
-  );
-}
-
-    return () => { mounted = false; };
-  }, []);
-
   return React.createElement('group',{ref:group, position:[0,0,0]},
     React.createElement('group',{ref:hipRef, position:[0,0,0]}),
     React.createElement('group',{ref:legLRef, position:[-0.14, 0.48, 0]}),
