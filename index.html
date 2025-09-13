@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LEGO Batman – Voxel Builder (Deluxe)</title>
+    <title>LEGO Batman – Voxel Builder (Deluxe, Fixed)</title>
     <style>
       html, body, #root { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#000; color:#fff; }
       .button { padding:8px 12px; border-radius:12px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.2); color:white; cursor:pointer; }
@@ -16,37 +16,36 @@
       .palette-item { display:flex; gap:8px; align-items:center; background:rgba(255,255,255,.05); padding:8px; border-radius:12px; border:1px solid rgba(255,255,255,.1); }
       .hint { position:absolute; top:16px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,.5); padding:8px 12px; border-radius:12px; font-size:13px; }
       #err { position: absolute; bottom: 10px; left: 10px; right: 10px; background: rgba(255,0,0,.15); color:#fff; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; padding: 8px; border-radius: 8px; display:none; white-space: pre-wrap;}
-      #ok  { position: absolute; top:10px; left:10px; background: rgba(0,255,127,.15); color:#b7ffcf; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 6px 10px; border-radius: 8px; font-size: 12px; }
+      #ok  { position: absolute; top:10px; left:10px; background: rgba(0,255,127,.15); color:#b7ffcf; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 6px 10px; border-radius: 8px; font-size: 12px; display:none; }
     </style>
   </head>
   <body>
     <div id="root"></div>
     <div id="err"></div>
-    <div id="ok" style="display:none">Loaded OK</div>
-
+    <div id="ok">Loaded OK</div>
     <script>
       const showErr = (msg) => { const el = document.getElementById('err'); el.style.display = 'block'; el.textContent = msg; };
-      const showOk  = () => { document.getElementById('ok').style.display = 'inline-block'; };
       window.addEventListener('error', e => showErr(String(e.error || e.message || e)));
       window.addEventListener('unhandledrejection', e => showErr(String(e.reason || e)));
+      // show loaded badge a bit later so CSS is applied
+      setTimeout(()=>{ const ok=document.getElementById('ok'); if (ok) ok.style.display='inline-block'; }, 300);
     </script>
 
     <script type="module">
-      // Pinned & BUNDLED imports (ens three/fiber/drei/framer-motion/React spilles sammen)
+      // Pinned & bundled imports (compatible versions)
       import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
       import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
       import * as THREE from "https://esm.sh/three@0.160.0";
-
       import { Canvas, useFrame, useThree } from "https://esm.sh/@react-three/fiber@8.15.16?bundle&deps=react@18.3.1,react-dom@18.3.1,three@0.160.0";
       import { Sky, Stars, PointerLockControls } from "https://esm.sh/@react-three/drei@9.92.7?bundle&deps=react@18.3.1,react-dom@18.3.1,three@0.160.0,@react-three/fiber@8.15.16";
       import { motion as Motion, AnimatePresence } from "https://esm.sh/framer-motion@11.0.0";
 
-      // ——— Utils
+      // ---------- Utils ----------
       const keyState = new Map();
       const setKey = (code, down) => keyState.set(code.toLowerCase(), down);
       const isDown = (code) => keyState.get(code.toLowerCase()) === true;
       const vec3 = (x=0,y=0,z=0) => ({x,y,z});
-      const toKey = (x,y,z) => `${x}|${y}|${z}`;
+      const toKey = (x,y,z) => \`\${x}|\${y}|\${z}\`;
 
       const BLOCK_TYPES = [
         { id: "black", label: "Black", color: "#111111" },
@@ -59,7 +58,7 @@
       ];
       const DEFAULT_HOTBAR = ["black","darkgray","lightgray","yellow","blue","purple","transparent","black","yellow"];
 
-      // ——— 3D
+      // ---------- 3D ----------
       function Ground({ size = 200 }) {
         const { scene } = useThree();
         useEffect(() => { scene.fog = null; }, [scene]);
@@ -78,7 +77,7 @@
             React.createElement('meshStandardMaterial',{color,transparent,opacity})
           ),
           [-0.25,0.25].map(sx => [-0.25,0.25].map(sz =>
-            React.createElement('mesh',{key:`${sx}-${sz}`,position:[sx,0.55,sz],castShadow:true},
+            React.createElement('mesh',{key:\`\${sx}-\${sz}\`,position:[sx,0.55,sz],castShadow:true},
               React.createElement('cylinderGeometry',{args:[0.12,0.12,0.1,16]}),
               React.createElement('meshStandardMaterial',{color,transparent,opacity})
             )
@@ -91,13 +90,13 @@
         return React.createElement('group',null,
           items.map(({pos, type}) => {
             const bt = BLOCK_TYPES.find(b=>b.id===type) || BLOCK_TYPES[0];
-            return React.createElement(BlockMesh, { key:`${pos[0]}|${pos[1]}|${pos[2]}`, position:pos, color:bt.color, transparent:!!bt.transparent, opacity:bt.opacity ?? 1 });
+            return React.createElement(BlockMesh, { key:\`\${pos[0]}|\${pos[1]}|\${pos[2]}\`, position:pos, color:bt.color, transparent:!!bt.transparent, opacity:bt.opacity ?? 1 });
           })
         );
       }
 
       function BatmanMinifig({ position }){
-        const body = "#151515", cowl = "#0d0d0d", belt = "#f1c40f", gray = "#444";
+        const body = "#151515"; const cowl = "#0d0d0d"; const belt = "#f1c40f"; const gray = "#444";
         return React.createElement('group',{position},
           React.createElement('mesh',{position:[ -0.15, 0.25, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}), React.createElement('meshStandardMaterial',{color:gray})),
           React.createElement('mesh',{position:[ 0.15, 0.25, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}), React.createElement('meshStandardMaterial',{color:gray})),
@@ -112,7 +111,7 @@
         );
       }
 
-      // ——— Collision
+      // ---------- Collision ----------
       let currentYaw = 0;
       function aabbVsBlocks(next, size, blocks){
         const half = { x: size.x/2, y: size.y/2, z: size.z/2 };
@@ -123,7 +122,7 @@
           for (let x=minX; x<=maxX; x++){
             for (let y=minY; y<=maxY; y++){
               for (let z=minZ; z<=maxZ; z++){
-                if (blocks.has(`${x}|${y}|${z}`)) return true;
+                if (blocks.has(\`\${x}|\${y}|\${z}\`)) return true;
               }
             }
           }
@@ -151,7 +150,7 @@
         return pos;
       }
 
-      // ——— Player
+      // ---------- Player ----------
       function PlayerController({ positionRef, blocks, firstPerson, cameraRef }){
         const ref = useRef(null);
         const vel = useRef(vec3(0,0,0));
@@ -173,47 +172,44 @@
         }, []);
 
         useFrame((_, dt) => {
-          const speed = 3.6, jumpV = 6.2;
+          const speed = 3.6;
+          const jumpV = 6.2;
           let forward = 0, strafe = 0;
           if (isDown("arrowup") || isDown("w")) forward += 1;
           if (isDown("arrowdown") || isDown("s")) forward -= 1;
           if (isDown("arrowleft") || isDown("a")) strafe -= 1;
           if (isDown("arrowright") || isDown("d")) strafe += 1;
-
           if (!firstPerson){
             if (isDown("arrowleft") && !isDown("a")) currentYaw += 1.5 * dt;
             if (isDown("arrowright") && !isDown("d")) currentYaw -= 1.5 * dt;
           }
-
           const yaw = firstPerson && cameraRef.current ? cameraRef.current.rotation.y : currentYaw;
           const dir = new THREE.Vector3(strafe, 0, -forward);
           if (dir.lengthSq()>0) dir.normalize();
           dir.applyAxisAngle(new THREE.Vector3(0,1,0), yaw);
-
           const v = vel.current;
-          v.x = dir.x * speed; v.z = dir.z * speed; v.y += -9.8 * dt;
-
+          v.x = dir.x * speed;
+          v.z = dir.z * speed;
+          v.y += -9.8 * dt;
           if (onGround.current && (isDown(" ") || isDown("space"))) { v.y = jumpV; onGround.current = false; }
-
           const p = positionRef.current;
           const next = { x: p.x + v.x * dt, y: p.y + v.y * dt, z: p.z + v.z * dt };
           const resolved = aabbVsBlocks(next, {x:0.6,y:1.7,z:0.6}, blocks);
-
           if (resolved.y <= 0.5) { resolved.y = 0.5; v.y = 0; onGround.current = true; }
           if (Math.abs(resolved.y - p.y) < 1e-3 && v.y < 0) { v.y = 0; onGround.current = true; }
-
           p.x = resolved.x; p.y = resolved.y; p.z = resolved.z;
-
           if (ref.current) { ref.current.position.set(p.x, p.y, p.z); if (!firstPerson) ref.current.rotation.y = yaw; }
         });
-
-        return React.createElement('group',{ref}, !firstPerson && React.createElement(BatmanMinifig,{position:[0,0,0]}));
+        return React.createElement('group',{ref},
+          !firstPerson && React.createElement(BatmanMinifig,{position:[0,0,0]})
+        );
       }
 
       function FollowCamera3P({ targetRef }){
         const { camera } = useThree();
         useFrame(() => {
-          const target = targetRef.current; if (!target) return;
+          const target = targetRef.current;
+          if (!target) return;
           const offset = new THREE.Vector3(0, 1.8, 4);
           const worldPos = new THREE.Vector3();
           target.getWorldPosition(worldPos);
@@ -224,7 +220,7 @@
         return null;
       }
 
-      // ——— Build & Gadget
+      // ---------- Build & Gadgets ----------
       function RaycastPlacer({ mode, blocks, setBlocks, getSelected, cameraRef }){
         const { camera, gl, scene } = useThree();
         const raycaster = useMemo(()=> new THREE.Raycaster(), []);
@@ -258,7 +254,11 @@
               const parent = intersectsBlocks[0].object.parent;
               const pos = parent.position;
               const key = toKey(Math.round(pos.x), Math.round(pos.y), Math.round(pos.z));
-              setBlocks(prev => { const m = new Map(prev); m.delete(key); return m; });
+              setBlocks(prev => {
+                const m = new Map(prev);
+                m.delete(key);
+                return m;
+              });
               return;
             }
           } else {
@@ -268,7 +268,11 @@
               const worldNormal = normal.applyMatrix3(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld)).normalize();
               const place = hit.point.clone().add(worldNormal.multiplyScalar(0.5)).floor().addScalar(0.5);
               const key = toKey(Math.round(place.x), Math.round(place.y), Math.round(place.z));
-              setBlocks(prev => { const m = new Map(prev); if (!m.has(key)) m.set(key, { pos: [Math.round(place.x),Math.round(place.y),Math.round(place.z)], type: getSelected() }); return m; });
+              setBlocks(prev => {
+                const m = new Map(prev);
+                if (!m.has(key)) m.set(key, { pos: [Math.round(place.x),Math.round(place.y),Math.round(place.z)], type: getSelected() });
+                return m;
+              });
               return;
             }
           }
@@ -279,7 +283,11 @@
           if (intersection) {
             const place = intersection.clone().add(new THREE.Vector3(0,0.5,0)).floor().addScalar(0.5);
             const key = toKey(Math.round(place.x), Math.round(place.y), Math.round(place.z));
-            setBlocks(prev => { const m = new Map(prev); if (!m.has(key)) m.set(key, { pos: [Math.round(place.x), Math.round(place.y), Math.round(place.z)], type: getSelected() }); return m; });
+            setBlocks(prev => {
+              const m = new Map(prev);
+              if (!m.has(key)) m.set(key, { pos: [Math.round(place.x), Math.round(place.y), Math.round(place.z)], type: getSelected() });
+              return m;
+            });
           }
         };
 
@@ -292,9 +300,8 @@
         return null;
       }
 
-      // ——— Batarang
-      let BAT_ID = 1;
-      function useBatarangs(blocks, setBlocks, cameraRef){
+      // ---------- BatarangSystem (Canvas-safe) ----------
+      function BatarangSystem({ blocks, setBlocks, cameraRef }){
         const [bats, setBats] = useState([]);
         useEffect(() => {
           const onKey = (e) => {
@@ -303,7 +310,7 @@
               const dir = new THREE.Vector3(0,0,-1).applyQuaternion(cam.quaternion).normalize();
               const pos = cam.position.clone().add(dir.clone().multiplyScalar(0.6)).add(new THREE.Vector3(0,-0.1,0));
               const speed = 12;
-              setBats(prev => [...prev, { id: BAT_ID++, pos, vel: dir.multiplyScalar(speed), ttl: 2.0 }]);
+              setBats(prev => [...prev, { id: Math.random(), pos, vel: dir.multiplyScalar(speed), ttl: 2.0 }]);
             }
           };
           window.addEventListener("keydown", onKey);
@@ -317,7 +324,7 @@
             for (const b of prev){
               const np = b.pos.clone().add(b.vel.clone().multiplyScalar(dt));
               const cx = Math.round(np.x), cy = Math.round(np.y), cz = Math.round(np.z);
-              const key = `${cx}|${cy}|${cz}`;
+              const key = \`\${cx}|\${cy}|\${cz}\`;
               let hit = false;
               if (blocks.has(key)){
                 hit = true;
@@ -330,19 +337,17 @@
           });
         });
 
-        return bats;
-      }
-
-      function BatarangMeshes({ bats }){
-        return React.createElement('group',null,
-          bats.map(b => React.createElement('mesh',{key:b.id, position:b.pos, castShadow:true},
-            React.createElement('torusGeometry',{args:[0.15, 0.05, 8, 16]}),
-            React.createElement('meshStandardMaterial',{color:"#f1c40f"})
-          ))
+        return React.createElement('group', null,
+          bats.map(b =>
+            React.createElement('mesh', { key: b.id, position: b.pos, castShadow: true },
+              React.createElement('torusGeometry', { args: [0.15, 0.05, 8, 16] }),
+              React.createElement('meshStandardMaterial', { color: "#f1c40f" })
+            )
+          )
         );
       }
 
-      // ——— UI
+      // ---------- UI ----------
       function Hotbar({ hotbar, selected, setSelected }){
         useEffect(() => {
           const onKey = (e) => { const n = parseInt(e.key, 10); if (!isNaN(n) && n >= 1 && n <= 9) setSelected(n-1); };
@@ -354,7 +359,7 @@
             const bt = BLOCK_TYPES.find(b=>b.id===id);
             const active = i===selected;
             return React.createElement('button',{
-              key:i, title:`${bt.label} (${i+1})`,
+              key:i, title:\`\${bt.label} (\${i+1})\`,
               onClick:()=>setSelected(i),
               style:{ width:48, height:48, borderRadius:12, border: active ? "2px solid white" : "1px solid rgba(255,255,255,.3)",
                 transform: active ? "scale(1.05)" : "scale(1.0)", background: bt.color, opacity: bt.opacity ?? 1, transition: "transform .15s"}
@@ -389,12 +394,12 @@
         );
       }
 
-      // ——— App
+      // ---------- App ----------
       function App(){
         const [blocks, setBlocks] = useState(() => {
           const m = new Map();
-          for (let x=-6; x<=6; x++) for (let z=-6; z<=6; z++) m.set(`${x}|0|${z}`, { pos:[x,0,z], type: (x+z)%2===0?"darkgray":"lightgray" });
-          for (let y=1; y<4; y++) m.set(`2|${y}|2`, { pos:[2,y,2], type: "yellow" });
+          for (let x=-6; x<=6; x++) for (let z=-6; z<=6; z++) m.set(\`\${x}|0|\${z}\`, { pos:[x,0,z], type: (x+z)%2===0?"darkgray":"lightgray" });
+          for (let y=1; y<4; y++) m.set(\`2|\${y}|2\`, { pos:[2,y,2], type: "yellow" });
           return m;
         });
         const [hotbar] = useState([...DEFAULT_HOTBAR]);
@@ -408,7 +413,6 @@
         const cameraRef = useRef(null);
 
         const getSelected = () => hotbar[selected] ?? "black";
-        const bats = useBatarangs(blocks, setBlocks, cameraRef);
 
         const [showHelp, setShowHelp] = useState(true);
         useEffect(() => { const t = setTimeout(()=>setShowHelp(false), 6000); return () => clearTimeout(t); }, []);
@@ -417,8 +421,6 @@
           window.addEventListener("keydown", onKey);
           return () => window.removeEventListener("keydown", onKey);
         }, []);
-
-        useEffect(()=>{ showOk(); }, []); // <- badge øverst: React mountet
 
         return React.createElement('div',{style:{width:"100%",height:"100%",position:"relative",background:"#000"}},
           React.createElement(Canvas, { shadows:true, camera:{ position:[0,2,8], fov:60 }, onCreated:({camera})=>{ (cameraRef).current = camera; } },
@@ -435,7 +437,7 @@
             ),
             firstPerson && React.createElement(PointerLockControls,{selector:"#root"}),
             React.createElement(RaycastPlacer,{mode, blocks, setBlocks, getSelected, cameraRef}),
-            React.createElement(BatarangMeshes,{bats})
+            React.createElement(BatarangSystem,{blocks, setBlocks, cameraRef})
           ),
           React.createElement('div',{className:'crosshair'}),
           React.createElement('div',{className:'topbar'},
