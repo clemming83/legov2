@@ -1,6 +1,6 @@
-// LEGO Batman – Voxel Builder (Safe v10)
-// Fixes: no load-flicker (no z-fighting), Space no longer toggles day/night,
-// can stand on/stack blocks (stepHeight=1.1), base tiles non-solid & thin.
+// LEGO Batman – Voxel Builder (Safe v11)
+// Fixes: præcis top-snap (kan stå på klodser), ingen svæven, auto-center på top,
+// roligere kamera, og simpel ben-animering ved gang.
 
 import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
 import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
@@ -13,6 +13,8 @@ const setKey = (code, down) => keyState.set(code.toLowerCase(), down);
 const isDown = (code) => keyState.get(code.toLowerCase()) === true;
 const vec3 = (x=0,y=0,z=0) => ({x,y,z});
 const toKey = (x,y,z) => `${x}|${y}|${z}`;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const EPS = 1e-4;
 
 /* ------------------------------- Farver -------------------------------- */
 const COLORS = [
@@ -46,11 +48,11 @@ function GradientSky({ mode="night" }) {
   useEffect(() => { gl.setClearColor(new THREE.Color(mode==="day" ? 0x87b6ff : 0x06080f)); }, [gl, mode]);
   return null;
 }
-function StarsSimple({ count = 300, visible=true }) {
+function StarsSimple({ count = 250, visible=true }) {
   const positions = useMemo(() => {
     const arr = new Float32Array(count * 3);
     for (let i=0;i<count;i++){
-      const r = 80 + Math.random()*120;
+      const r = 90 + Math.random()*110;
       const t = Math.random() * Math.PI * 2;
       const p = Math.acos(2*Math.random()-1);
       arr[i*3+0] = r * Math.sin(p) * Math.cos(t);
@@ -64,11 +66,11 @@ function StarsSimple({ count = 300, visible=true }) {
     React.createElement('bufferGeometry',null,
       React.createElement('bufferAttribute',{attach:"attributes-position", array:positions, itemSize:3, count:positions.length/3})
     ),
-    React.createElement('pointsMaterial',{size:0.5, sizeAttenuation:true, color:"#9fc9ff"})
+    React.createElement('pointsMaterial',{size:0.45, sizeAttenuation:true, color:"#9fc9ff"})
   );
 }
 function Ground({ size = 400, groundColor="#2a2a2d" }) {
-  // Flyt planet lidt ned for at undgå z-fighting med base tiles
+  // Lidt under y=0 for at undgå z-fighting med tiles
   return (
     React.createElement('mesh',{position:[0,-0.51,0], rotation:[ -Math.PI / 2, 0, 0 ], receiveShadow:true},
       React.createElement('planeGeometry',{args:[size, size, size, size]}),
@@ -77,7 +79,6 @@ function Ground({ size = 400, groundColor="#2a2a2d" }) {
   );
 }
 function BlockCell({ position, color, transparent=false, opacity=1, tile=false }){
-  // Tiles = tynde plader, ikke solide; blocks = 1x1x1 klodser
   if (tile) {
     return React.createElement('group',{position},
       React.createElement('mesh',{castShadow:false,receiveShadow:true, userData:{isTile:true}},
@@ -102,7 +103,7 @@ function BlockCell({ position, color, transparent=false, opacity=1, tile=false }
 function Blocks({ blocks }){
   const items = [...blocks.values()];
   return React.createElement('group',{name:"WorldBlocks"},
-    items.map(({pos, type, solid, tile}) => {
+    items.map(({pos, type, tile}) => {
       const c = COLORS.find(k=>k.id===type) || COLORS[0];
       return React.createElement(BlockCell, {
         key:`${pos[0]}|${pos[1]}|${pos[2]}`,
@@ -113,120 +114,143 @@ function Blocks({ blocks }){
   );
 }
 
-/* ----------------------- Collision/physics w/ step ---------------------- */
+/* ----------------------- Collision/physics (robust) --------------------- */
 let currentYaw = 0;
+
+/** Returnerer true hvis spiller-AABB overlapper en solid celle */
 function collidesAt(p, size, blocks){
   const half = { x: size.x/2, y: size.y/2, z: size.z/2 };
-  const minX = Math.floor(p.x - half.x), maxX = Math.floor(p.x + half.x);
-  const minY = Math.floor(p.y - half.y), maxY = Math.floor(p.y + half.y);
-  const minZ = Math.floor(p.z - half.z), maxZ = Math.floor(p.z + half.z);
+  const minX = Math.floor(p.x - half.x + EPS), maxX = Math.floor(p.x + half.x - EPS);
+  const minY = Math.floor(p.y - half.y + EPS), maxY = Math.floor(p.y + half.y - EPS);
+  const minZ = Math.floor(p.z - half.z + EPS), maxZ = Math.floor(p.z + half.z - EPS);
   for (let x=minX; x<=maxX; x++){
     for (let y=minY; y<=maxY; y++){
       for (let z=minZ; z<=maxZ; z++){
-        if (y < 0) { if (y <= -1) return true; continue; } // "under gulv" betragtes som solid
+        if (y < 0) return true; // under gulv er solid
         const cell = blocks.get(`${x}|${y}|${z}`);
-        if (!cell) continue;
-        if (cell.solid === false) continue; // tiles ignoreres
-        return true;
+        if (cell && cell.solid === true) return true;
       }
     }
   }
   return false;
 }
-function tryStepUp(basePos, tryPos, size, blocks, maxStep=1.1){
-  const inc = 0.05;
-  const stepped = { x: tryPos.x, y: basePos.y, z: tryPos.z };
-  for (let h=inc; h<=maxStep+1e-6; h+=inc){
-    stepped.y = basePos.y + h;
-    if (!collidesAt(stepped, size, blocks)) return { ok:true, pos: { ...stepped }, stepHeight:h };
+
+/** Højden (y) på øverste solide celle under (cx,cz); eller -Infinity hvis ingen */
+function supportTopAt(cx, cz, blocks){
+  // Søg et lille interval omkring nul og opad nogle lag
+  let top = -Infinity;
+  for (let y=-1; y<=32; y++){
+    const c = blocks.get(`${cx}|${y}|${cz}`);
+    if (c && c.solid === true) top = Math.max(top, y + 1);
   }
-  return { ok:false, pos: tryPos, stepHeight:0 };
+  return top;
 }
-function snapToTop(pos, size, blocks){
-  const belowY = Math.floor(pos.y - size.y/2 - 0.001);
-  const cx = Math.round(pos.x), cz = Math.round(pos.z);
-  if (belowY < 0) { pos.y = 0 + size.y/2; return; }
-  for (let dy=0; dy<=2; dy++){
-    const y = belowY - dy;
-    const cell = blocks.get(`${cx}|${y}|${cz}`);
-    if (cell && cell.solid !== false){
-      const top = y + 1 + size.y/2;
-      if (pos.y < top + 0.12){ pos.y = top; }
-      break;
+
+/** Aksial sweep-resolve + præcis top-snap */
+function resolveMovement(p, v, dt, size, blocks, prevPos){
+  const next = { x: p.x + v.x * dt, y: p.y + v.y * dt, z: p.z + v.z * dt };
+
+  // 1) X-akse
+  let test = { x: next.x, y: p.y, z: p.z };
+  if (collidesAt(test, size, blocks)){
+    const dir = Math.sign(test.x - p.x) || 1;
+    // skub ud til cellegrænse
+    test.x = Math.floor(test.x + (dir>0 ? size.x/2 : -size.x/2)) + (dir>0 ? 0.5 - size.x/2 : 0.5 + size.x/2);
+    while (collidesAt(test, size, blocks)) test.x -= dir * 0.01;
+  }
+  p.x = test.x;
+
+  // 2) Z-akse
+  test = { x: p.x, y: p.y, z: next.z };
+  if (collidesAt(test, size, blocks)){
+    const dir = Math.sign(test.z - p.z) || 1;
+    test.z = Math.floor(test.z + (dir>0 ? size.z/2 : -size.z/2)) + (dir>0 ? 0.5 - size.z/2 : 0.5 + size.z/2);
+    while (collidesAt(test, size, blocks)) test.z -= dir * 0.01;
+  }
+  p.z = test.z;
+
+  // 3) Y-akse
+  test = { x: p.x, y: next.y, z: p.z };
+  let hitY = false;
+  if (collidesAt(test, size, blocks)){
+    hitY = true;
+    const dir = Math.sign(test.y - p.y) || 1; // op eller ned
+    if (dir > 0){
+      // hoved i loft → klem lige under loftet
+      test.y = Math.floor(test.y + size.y/2) + 0.5 - size.y/2 - EPS;
+      while (collidesAt(test, size, blocks)) test.y -= 0.005;
+      v.y = Math.min(v.y, 0);
+    } else {
+      // land på top: snap til præcis top af støttecellen
+      const cx = Math.round(p.x), cz = Math.round(p.z);
+      const topY = supportTopAt(cx, cz, blocks);
+      if (topY !== -Infinity){
+        test.y = topY + size.y/2; // top af cellen + halv spillerhøjde
+        while (collidesAt(test, size, blocks)) test.y += 0.002;
+      } else {
+        // ingen støtte, skub op til lige over gulv ved behov
+        test.y = Math.max(test.y, 0 + size.y/2);
+      }
+      v.y = 0;
     }
   }
-}
-function aabbVsBlocks(next, size, blocks, current, stepHeight=1.1){
-  const pos = { x: next.x, y: next.y, z: next.z };
+  p.y = test.y;
 
-  let testX = { x: pos.x, y: current.y, z: pos.z };
-  let steppedUp = false;
-  if (collidesAt(testX, size, blocks)){
-    const stepped = tryStepUp(current, testX, size, blocks, stepHeight);
-    if (stepped.ok){ testX = stepped.pos; steppedUp = true; }
-    else {
-      const dir = Math.sign(testX.x - Math.round(testX.x)) || (testX.x>=0?1:-1);
-      let n=0; while (collidesAt(testX, size, blocks) && n++<200) testX.x += dir * 0.01;
-    }
+  // 4) Når vi står (v.y≈0, og støtte under os) → auto-center langsomt ind til cellens center
+  const cx = Math.round(p.x), cz = Math.round(p.z);
+  const topY = supportTopAt(cx, cz, blocks);
+  const onTop = topY !== -Infinity && Math.abs((topY + size.y/2) - p.y) < 0.08;
+  if (onTop){
+    const targetX = cx, targetZ = cz;
+    p.x = THREE.MathUtils.lerp(p.x, targetX, 0.35); // glid ind til center → ingen “skub ud”
+    p.z = THREE.MathUtils.lerp(p.z, targetZ, 0.35);
   }
-  pos.x = testX.x; pos.y = testX.y; pos.z = testX.z;
 
-  let testZ = { x: pos.x, y: pos.y, z: pos.z };
-  if (collidesAt(testZ, size, blocks)){
-    const stepped = tryStepUp({x:testZ.x,y:pos.y,z:testZ.z}, testZ, size, blocks, stepHeight);
-    if (stepped.ok){ testZ = stepped.pos; steppedUp = true; }
-    else {
-      const dir = Math.sign(testZ.z - Math.round(testZ.z)) || (testZ.z>=0?1:-1);
-      let n=0; while (collidesAt(testZ, size, blocks) && n++<200) testZ.z += dir * 0.01;
-    }
-  }
-  pos.x = testZ.x; pos.y = testZ.y; pos.z = testZ.z;
+  // 5) Gulv-sikkerhed
+  if (p.y < size.y/2) p.y = size.y/2;
 
-  let testY = { x: pos.x, y: next.y, z: pos.z };
-  if (collidesAt(testY, size, blocks)){
-    const dir = Math.sign(testY.y - Math.round(testY.y)) || (testY.y >= current.y ? 1 : -1);
-    let n=0; while (collidesAt(testY, size, blocks) && n++<2000) testY.y += (dir===0? (testY.y>=0?1:-1):dir) * 0.01;
-  }
-  pos.y = testY.y;
-
-  snapToTop(pos, size, blocks);
-  if (pos.y < size.y/2) pos.y = size.y/2;
-
-  if (steppedUp || pos.y > current.y + 0.19) {
-    pos.x = Math.round(pos.x);
-    pos.z = Math.round(pos.z);
-  }
-  return pos;
+  // Returner om vi står “på noget”
+  return { onGround: onTop };
 }
 
 /* ------------------------------- Player -------------------------------- */
-function BatmanMinifig(){
+function BatmanMinifig({ legRefs }){
   const body = "#151515", cowl = "#0d0d0d", belt = "#f1c40f", gray = "#444";
   return React.createElement('group',null,
-    React.createElement('mesh',{position:[ -0.15, 0.25, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}), React.createElement('meshStandardMaterial',{color:gray})),
-    React.createElement('mesh',{position:[ 0.15, 0.25, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}), React.createElement('meshStandardMaterial',{color:gray})),
+    // Ben (referencer til animation)
+    React.createElement('mesh',{ref:legRefs.left, position:[ -0.15, 0.25, 0 ], castShadow:true},
+      React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}),
+      React.createElement('meshStandardMaterial',{color:gray})
+    ),
+    React.createElement('mesh',{ref:legRefs.right, position:[ 0.15, 0.25, 0 ], castShadow:true},
+      React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}),
+      React.createElement('meshStandardMaterial',{color:gray})
+    ),
+    // Torso/arm/segl
     React.createElement('mesh',{position:[0, 0.85, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.6,0.7,0.35]}), React.createElement('meshStandardMaterial',{color:body})),
     React.createElement('mesh',{position:[0, 0.55, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.62,0.1,0.37]}), React.createElement('meshStandardMaterial',{color:belt})),
     React.createElement('mesh',{position:[ -0.45, 0.85, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.2,0.5,0.2]}), React.createElement('meshStandardMaterial',{color:body})),
     React.createElement('mesh',{position:[ 0.45, 0.85, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.2,0.5,0.2]}), React.createElement('meshStandardMaterial',{color:body})),
+    // Hoved + ører + kappe
     React.createElement('mesh',{position:[0, 1.35, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.35,0.35,0.3]}), React.createElement('meshStandardMaterial',{color:cowl})),
     React.createElement('mesh',{position:[ -0.12, 1.6, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.07,0.15,0.07]}), React.createElement('meshStandardMaterial',{color:cowl})),
     React.createElement('mesh',{position:[ 0.12, 1.6, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.07,0.15,0.07]}), React.createElement('meshStandardMaterial',{color:cowl})),
     React.createElement('mesh',{position:[0, 0.9, -0.23], castShadow:true}, React.createElement('boxGeometry',{args:[0.6,0.8,0.02]}), React.createElement('meshStandardMaterial',{color:cowl}))
   );
 }
+
 function PlayerController({ positionRef, blocks }){
   const ref = useRef(null);
   const vel = useRef(vec3(0,0,0));
-  const onGround = useRef(true);
+  const onGroundRef = useRef(true);
+  const walkPhase = useRef(0);
+  const legLeft = useRef(null);
+  const legRight = useRef(null);
 
   useEffect(() => {
     const onKeyDown = (e) => {
       const k = e.key.toLowerCase();
-      // Forhindr space/arrow/WASD i at "klikke" fokus-knapper
-      if ([" ", "space", "arrowup","arrowdown","arrowleft","arrowright","w","a","s","d"].includes(k)) {
-        e.preventDefault();
-      }
+      if ([" ", "space", "arrowup","arrowdown","arrowleft","arrowright","w","a","s","d"].includes(k)) e.preventDefault();
       setKey(e.key, true);
     };
     const onKeyUp = (e) => setKey(e.key, false);
@@ -238,10 +262,11 @@ function PlayerController({ positionRef, blocks }){
     };
   }, []);
 
-  useFrame((_, _dt) => {
+  useFrame((state, _dt) => {
     const dt = Math.min(_dt, 1/60);
-    const speed = 3.8, jumpV = 6.4, gravity = 9.8;
+    const speedMax = 4.2, jumpV = 6.6, gravity = 12.0;
 
+    // input
     let forward = 0, strafe = 0;
     if (isDown("arrowup") || isDown("w")) forward += 1;
     if (isDown("arrowdown") || isDown("s")) forward -= 1;
@@ -251,55 +276,67 @@ function PlayerController({ positionRef, blocks }){
     if (isDown("arrowleft") && !isDown("a")) currentYaw += 1.7 * dt;
     if (isDown("arrowright") && !isDown("d")) currentYaw -= 1.7 * dt;
 
+    // bevægelsesvektor i verdensrum
     const yaw = currentYaw;
-    const dir = new THREE.Vector3(strafe, 0, -forward);
-    if (dir.lengthSq()>0) dir.normalize();
-    dir.applyAxisAngle(new THREE.Vector3(0,1,0), yaw);
+    const wish = new THREE.Vector3(strafe, 0, -forward);
+    if (wish.lengthSq()>0) wish.normalize();
+    wish.applyAxisAngle(new THREE.Vector3(0,1,0), yaw);
 
     const v = vel.current;
-    v.x = dir.x * speed; v.z = dir.z * speed; v.y += -gravity * dt;
-    if (!onGround.current) { v.x *= 0.9; v.z *= 0.9; }
+    const accel = 12.0;
+    v.x = THREE.MathUtils.lerp(v.x, wish.x * speedMax, 1 - Math.exp(-accel * dt));
+    v.z = THREE.MathUtils.lerp(v.z, wish.z * speedMax, 1 - Math.exp(-accel * dt));
+    v.y += -gravity * dt;
 
-    if (onGround.current && (isDown(" ") || isDown("space"))) { v.y = jumpV; onGround.current = false; }
+    // hop
+    if (onGroundRef.current && (isDown(" ") || isDown("space"))) { v.y = jumpV; onGroundRef.current = false; }
 
+    // resolve
     const p = positionRef.current;
-    const next = { x: p.x + v.x * dt, y: p.y + v.y * dt, z: p.z + v.z * dt };
-    const resolved = aabbVsBlocks(next, {x:0.6,y:1.7,z:0.6}, blocks, p, 1.1);
+    const prev = { x:p.x, y:p.y, z:p.z };
+    const res = resolveMovement(p, v, dt, {x:0.6,y:1.7,z:0.6}, blocks, prev);
+    onGroundRef.current = res.onGround;
 
-    const wasFalling = v.y < 0;
-    const landed = wasFalling && (resolved.y >= p.y) && Math.abs(resolved.y - p.y) < 0.06;
-
-    if (landed){ v.y = 0; onGround.current = true; }
-    else {
-      const under = { x: resolved.x, y: resolved.y - 0.02, z: resolved.z };
-      const touching = collidesAt(under, {x:0.6,y:1.7,z:0.6}, blocks) || resolved.y <= 0.51;
-      onGround.current = touching;
-      if (touching && v.y < 0) v.y = 0;
+    // friktion når vi står
+    if (onGroundRef.current){
+      v.x *= 0.82; v.z *= 0.82;
     }
 
-    if (onGround.current){ v.x *= 0.85; v.z *= 0.85; }
-
-    p.x = resolved.x; p.y = resolved.y; p.z = resolved.z;
-    if (p.y < 0.5) { p.y = 0.5; v.y = 0; onGround.current = true; }
-
+    // opdater mesh
     if (ref.current) {
       ref.current.position.set(p.x, p.y, p.z);
       ref.current.rotation.y = yaw;
     }
+
+    // Walk cycle (ben)
+    const planarSpeed = Math.hypot(v.x, v.z);
+    const moving = planarSpeed > 0.15 && onGroundRef.current;
+    const targetSpeed = clamp((planarSpeed / speedMax), 0, 1);
+    walkPhase.current += (moving ? 10 : 6) * dt * (0.5 + 0.5*targetSpeed);
+    const amp = moving ? (0.6 * targetSpeed) : 0;
+    const leftAng = Math.sin(walkPhase.current) * amp;
+    const rightAng = -leftAng;
+
+    if (legLeft.current)  legLeft.current.rotation.x = leftAng;
+    if (legRight.current) legRight.current.rotation.x = rightAng;
   });
 
   return React.createElement('group',{ref},
-    React.createElement('group',{position:[0,0,0]}, React.createElement(BatmanMinifig,null))
+    React.createElement('group',{position:[0,0,0]}, React.createElement(BatmanMinifig,{ legRefs:{left:legLeft, right:legRight} }))
   );
 }
+
 function CameraRig({ playerPosRef }){
   const { camera } = useThree();
+  const smooth = useRef(new THREE.Vector3());
   useFrame(() => {
     const p = playerPosRef.current;
-    const offset = new THREE.Vector3(0, 1.8, 4).applyAxisAngle(new THREE.Vector3(0,1,0), currentYaw);
-    const target = new THREE.Vector3(p.x, p.y + 0.9, p.z);
+    // roligt chase-cam
+    const offset = new THREE.Vector3(0, 1.95, 4.5).applyAxisAngle(new THREE.Vector3(0,1,0), currentYaw);
+    const target = new THREE.Vector3(p.x, p.y + 0.95, p.z);
     const desired = target.clone().add(offset);
-    camera.position.lerp(desired, 0.18);
+    smooth.current.lerp(desired, 0.12);
+    camera.position.copy(smooth.current);
     camera.lookAt(target);
   });
   return null;
@@ -319,11 +356,11 @@ function addBrickAt(base, brick, colorId, rot, blocks, bricks){
       if (cy < 0) return false;
       const key = toKey(cx,cy,cz);
       const existing = blocks.get(key);
-      if (existing && existing.solid !== false) return false;   // blok optaget
+      if (existing && existing.solid === true) return false;   // optaget
       cells.push({cx,cy,cz,key});
     }
   }
-  // Erstat tiles (solid:false) med rigtige klodser (solid:true)
+  // Erstat evt. tiles (solid:false) ved y=0
   for (const c of cells) blocks.set(c.key, { pos:[c.cx,c.cy,c.cz], type: colorId, brick:id, solid:true, tile:false });
   bricks.set(id, cells.map(c=>c.key));
   return true;
@@ -331,7 +368,7 @@ function addBrickAt(base, brick, colorId, rot, blocks, bricks){
 function removeBrickAtCell(cx,cy,cz, blocks, bricks){
   const key = toKey(cx,cy,cz);
   const cell = blocks.get(key);
-  if (!cell || cell.solid === false) return false; // fjern kun ægte klodser
+  if (!cell || cell.solid !== true) return false; // fjern kun ægte klodser
   const id = cell.brick;
   const list = bricks.get(id) || [];
   for (const k of list) blocks.delete(k);
@@ -394,7 +431,7 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
       return;
     }
 
-    // fallback: jorden (læg første klods i y=1 så den er ovenpå planet)
+    // fallback: jorden
     const canvas = document.querySelector("canvas");
     const rect = canvas.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -429,12 +466,18 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
 
 /* --------------------------------- UI ---------------------------------- */
 function ColorHotbar({ colors, selected, onSelect }){
-  return React.createElement('div',{className:'hud'},
+  return React.createElement('div',{style:{
+    display:"flex", gap:8, padding:10, borderRadius:16, background:"rgba(0,0,0,0.35)", backdropFilter:"blur(6px)"
+  }},
     colors.map((c, i) => React.createElement('div',{
-      key:c.id, className:`dot ${i===selected?'active':''}`,
+      key:c.id,
       onClick:()=>onSelect(i),
       title:c.label,
-      style:{ width:28, height:28, borderRadius:999, border:"2px solid rgba(255,255,255,.4)", background:c.color, opacity:c.opacity ?? 1, cursor:"pointer" }
+      style:{
+        width:28, height:28, borderRadius:999, border:"2px solid rgba(255,255,255,.4)",
+        background:c.color, opacity:c.opacity ?? 1, cursor:"pointer",
+        outline: i===selected ? "2px solid #fff" : "none"
+      }
     }))
   );
 }
@@ -448,20 +491,21 @@ function BrickPreviewSVG({ w, l }) {
   );
 }
 function Sidebar({ open, setOpen, bricks, selectedBrick, onSelectBrick }){
-  return open ? React.createElement('div',{className:'sidebar', style:{
+  if (!open) return null;
+  return React.createElement('div',{style:{
     position:"absolute", top:0, left:0, height:"100%", width:320, background:"rgba(24,24,27,.92)", color:"#fff",
     padding:16, overflowY:"auto", backdropFilter:"blur(6px)", boxShadow:"0 0 24px rgba(0,0,0,.5)", borderRight:"1px solid rgba(255,255,255,.08)"
   }},
     React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
       React.createElement('h2',{style:{fontSize:16,fontWeight:600, margin:0}},'Klodser'),
-      React.createElement('button',{className:'button', tabIndex:-1, onMouseDown:(e)=>e.preventDefault(), onClick:()=>setOpen(false)},'Luk (B)')
+      React.createElement('button',{onMouseDown:(e)=>e.preventDefault(), tabIndex:-1, onClick:()=>setOpen(false), style:btnU()},'Luk (B)')
     ),
-    React.createElement('div',{className:'bricklist', style:{display:"grid", gridTemplateColumns:"1fr", gap:10}},
+    React.createElement('div',{style:{display:"grid", gridTemplateColumns:"1fr", gap:10}},
       bricks.map(b => React.createElement('div',{
-        key:b.id, className:`brick-item ${selectedBrick===b.id?'active':''}`, onClick:()=>onSelectBrick(b.id),
+        key:b.id, onClick:()=>onSelectBrick(b.id),
         style:{display:"flex",alignItems:"center",gap:12, background:"rgba(255,255,255,.05)", padding:10, borderRadius:12, border:"1px solid rgba(255,255,255,.1)", cursor:"pointer", outline: selectedBrick===b.id ? "2px solid #fff" : "none"}
       },
-        React.createElement('div',{className:'brick-preview', style:{width:84,height:48,borderRadius:10, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", display:"grid", placeItems:"center"}}, React.createElement(BrickPreviewSVG,{w:b.w, l:b.l})),
+        React.createElement('div',{style:{width:84,height:48,borderRadius:10, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", display:"grid", placeItems:"center"}}, React.createElement(BrickPreviewSVG,{w:b.w, l:b.l})),
         React.createElement('div',null,
           React.createElement('div',{style:{fontWeight:600}}, b.id),
           React.createElement('div',{style:{marginTop:6, padding:"6px 10px", borderRadius:999, border:"1px solid rgba(255,255,255,.25)", background:"rgba(255,255,255,.08)"}}, `${b.w}×${b.l} studs`)
@@ -470,7 +514,7 @@ function Sidebar({ open, setOpen, bricks, selectedBrick, onSelectBrick }){
     ),
     React.createElement('hr',{style:{borderColor:"rgba(255,255,255,.1)", margin:"16px 0"}}),
     React.createElement('p',{style:{fontSize:12,opacity:.7}},'Tip: R roterer aflange klodser • Højreklik fjerner • Venstreklik placerer')
-  ) : null;
+  );
 }
 function TouchControls(){
   const press = (code, down) => { setKey(code, down); };
@@ -480,14 +524,14 @@ function TouchControls(){
     onMouseDown:(e)=>{ e.preventDefault(); press(code,true); },
     onMouseUp:(e)=>{ e.preventDefault(); press(code,false); },
   });
-  return React.createElement('div',{className:'touch-controls', style:{position:"absolute", right:16, bottom:16, display:"flex", gap:10, alignItems:"flex-end"}},
-    React.createElement('div',{className:'dpad', style:{width:140, height:140, position:"relative"}},
-      React.createElement('div',{className:'arrow up btn',    ...bind("ArrowUp"),    style:btnStyle(42,0)}, "▲"),
-      React.createElement('div',{className:'arrow down btn',  ...bind("ArrowDown"),  style:btnStyle(42,84)}, "▼"),
-      React.createElement('div',{className:'arrow left btn',  ...bind("ArrowLeft"),  style:btnStyle(0,42)}, "◀"),
-      React.createElement('div',{className:'arrow right btn', ...bind("ArrowRight"), style:btnStyle(84,42)}, "▶"),
+  return React.createElement('div',{style:{position:"absolute", right:16, bottom:16, display:"flex", gap:10, alignItems:"flex-end"}},
+    React.createElement('div',{style:{width:140, height:140, position:"relative"}},
+      React.createElement('div',{...bind("ArrowUp"),    style:btnStyle(42,0)}, "▲"),
+      React.createElement('div',{...bind("ArrowDown"),  style:btnStyle(42,84)}, "▼"),
+      React.createElement('div',{...bind("ArrowLeft"),  style:btnStyle(0,42)}, "◀"),
+      React.createElement('div',{...bind("ArrowRight"), style:btnStyle(84,42)}, "▶"),
     ),
-    React.createElement('div',{className:'jump btn', ...bind(" "), style:{
+    React.createElement('div',{...bind(" "), style:{
       width:88, height:88, borderRadius:18, background:"rgba(255,255,255,.1)", border:"1px solid rgba(255,255,255,.3)", display:"grid", placeItems:"center", fontWeight:700, userSelect:"none"
     }}, "HOP")
   );
@@ -499,12 +543,15 @@ function btnStyle(left, top){
     borderRadius:12, display:"grid", placeItems:"center", fontSize:20, userSelect:"none", cursor:"pointer"
   };
 }
+function btnU(){
+  return { padding:"8px 12px", borderRadius:12, background:"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.2)", color:"#fff", cursor:"pointer" };
+}
 
 /* --------------------------------- App --------------------------------- */
 function App(){
   const [blocks, setBlocks] = useState(() => {
     const m = new Map();
-    // Base: dekorative tiles ved y=0 (ikke solide; renderes som tynde plader)
+    // Base: dekorative tiles ved y=0 (ikke solide)
     for (let x=-12; x<=12; x++) for (let z=-12; z<=12; z++){
       m.set(`${x}|0|${z}`, { pos:[x,0,z], type: (x+z)%2===0?"darkgray":"lightgray", brick: -1, solid:false, tile:true });
     }
@@ -520,7 +567,6 @@ function App(){
   const [theme, setTheme] = useState("night");
 
   const worldRef = useRef();
-  // Start en anelse højere (ingen start-kontakt) → ingen flicker
   const playerPos = useRef(vec3(0,1.1,6));
 
   useEffect(() => {
@@ -554,7 +600,7 @@ function App(){
       gl:{ antialias:false, powerPreference:"high-performance", alpha:false, stencil:false, depth:true, preserveDrawingBuffer:false }
     },
       React.createElement(GradientSky,{mode:theme}),
-      React.createElement(StarsSimple,{count: 300, visible: theme==="night"}),
+      React.createElement(StarsSimple,{count: 250, visible: theme==="night"}),
       React.createElement('ambientLight',{intensity: theme==="day" ? 0.9 : 0.5}),
       React.createElement('directionalLight',{position:[5,10,5], intensity: theme==="day" ? 1.2 : 0.8, castShadow:true, color: theme==="day" ? "#ffffff" : "#a0b8ff"}),
 
@@ -570,24 +616,24 @@ function App(){
 
     // HUD + version
     React.createElement('div',{style:{position:"absolute", top:16, right:16, display:"flex", gap:8, alignItems:"center"}},
-      React.createElement('button',{className:'toggle', ...btnPropsNoFocus, onClick:()=>setTheme(t=>t==="day"?"night":"day"),
+      React.createElement('button',{...btnPropsNoFocus, onClick:()=>setTheme(t=>t==="day"?"night":"day"),
         style:toggleStyle(theme==="day")}, theme==="day"?"☀️ Dag":"🌙 Nat"),
       React.createElement('div',{style:{textAlign:'right'}},
-        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Safe v10'),
+        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Safe v11'),
         React.createElement('div',{style:{color:"#fff", fontSize:16, fontWeight:600}},'LEGO Batman – Voxel Builder')
       )
     ),
 
     React.createElement('div',{style:{position:"absolute", top:16, left:16, display:"flex", gap:8, flexWrap:"wrap"}},
-      React.createElement('button',{className:'button', ...btnPropsNoFocus, onClick:()=>setSidebarOpen(v=>!v), style:btnU()},
+      React.createElement('button',{...btnPropsNoFocus, onClick:()=>setSidebarOpen(v=>!v), style:btnU()},
         sidebarOpen?"Skjul":"Klodser (B)"),
-      React.createElement('button',{className:'button', ...btnPropsNoFocus, onClick:()=>setMode(m=>m==="build"?"gadget":"build"), style:btnU()},
+      React.createElement('button',{...btnPropsNoFocus, onClick:()=>setMode(m=>m==="build"?"gadget":"build"), style:btnU()},
         `Tilstand: ${mode==="build"?"Byg":"Gadget"} (Q)`),
-      React.createElement('button',{className:'button', ...btnPropsNoFocus, onClick:()=>setBrickRot(r=>1-r), style:btnU()},
+      React.createElement('button',{...btnPropsNoFocus, onClick:()=>setBrickRot(r=>1-r), style:btnU()},
         `Rotation (R): ${brickRot? "90°":"0°"}`)
     ),
 
-    React.createElement('div',{style:{position:"absolute", left:"50%", transform:"translateX(-50%)", bottom:16, display:"flex", gap:8, padding:10, borderRadius:16, background:"rgba(0,0,0,0.35)", backdropFilter:"blur(6px)"}},
+    React.createElement('div',{style:{position:"absolute", left:"50%", transform:"translateX(-50%)", bottom:16}},
       React.createElement(ColorHotbar,{ colors:COLORS, selected:colorIndex, onSelect:setColorIndex })
     ),
 
@@ -603,9 +649,6 @@ function App(){
 }
 function toggleStyle(active){
   return { padding:"6px 10px", borderRadius:10, border:"1px solid rgba(255,255,255,.25)", background:"rgba(255,255,255,.08)", cursor:"pointer", outline: active ? "2px solid #fff" : "none" };
-}
-function btnU(){
-  return { padding:"8px 12px", borderRadius:12, background:"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.2)", color:"#fff", cursor:"pointer" };
 }
 
 /* ------------------------------ Mount app ------------------------------ */
