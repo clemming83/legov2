@@ -1,5 +1,4 @@
-// LEGO Batman – Voxel Builder (Safe v14)
-// Modulært setup: figur i /src/characters/Batman.js, shader i /src/shaders.js, prefab i /src/prefabs/GothamMini.js
+// LEGO Batman – Voxel Builder (Safe v14.1)
 import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
 import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
 import * as THREE from "https://esm.sh/three@0.160.0";
@@ -9,7 +8,9 @@ import { makeToonMaterial } from "./shaders.js";
 import { BatmanOBJ, BatmanMiniFallback } from "./characters/Batman.js";
 import { GothamMini } from "./prefabs/GothamMini.js";
 
-/* ---------------------------- Utils & State ---------------------------- */
+const LOAD_OBJ = true; // flip til false hvis du vil udelukke Batman OBJ for test
+
+/* ---------- utils ---------- */
 const keyState = new Map();
 const setKey = (code, down) => keyState.set(code.toLowerCase(), down);
 const isDown = (code) => keyState.get(code.toLowerCase()) === true;
@@ -18,7 +19,7 @@ const toKey = (x,y,z) => `${x}|${y}|${z}`;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const EPS = 1e-4;
 
-/* ------------------------------- Farver -------------------------------- */
+/* ---------- colors/bricks ---------- */
 const COLORS = [
   { id: "black",     label: "Black",  color: "#0f1113" },
   { id: "darkgray",  label: "Dark Gray", color: "#2f3439" },
@@ -31,9 +32,6 @@ const COLORS = [
   { id: "white",     label: "White",  color: "#f3f4f6" },
   { id: "trans",     label: "Translucent", color: "#a0d8ff", transparent: true, opacity: 0.5 },
 ];
-const DEFAULT_COLOR_INDEX = 3;
-
-/* ------------------------------ Klodser -------------------------------- */
 const BRICKS = [
   { id:"2x2", w:2, l:2 },
   { id:"2x4", w:2, l:4 },
@@ -44,7 +42,7 @@ const BRICKS = [
 const BRICK_MAP = new Map(BRICKS.map(b=>[b.id,b]));
 let BRICK_ID = 1;
 
-/* -------------------------------- World -------------------------------- */
+/* ---------- sky/ground ---------- */
 function GradientSky({ mode="night" }) {
   const { gl } = useThree();
   useEffect(() => { gl.setClearColor(new THREE.Color(mode==="day" ? 0x87b6ff : 0x06080f)); }, [gl, mode]);
@@ -71,23 +69,19 @@ function StarsSimple({ count = 240, visible=true }) {
     React.createElement('pointsMaterial',{size:0.45, sizeAttenuation:true, color:"#9fc9ff"})
   );
 }
-function Ground({ size = 400, groundColor="#2a2a2d", aoTex=null }) {
+function Ground({ size = 400, groundColor="#2a2a2d" }) {
   return (
     React.createElement('mesh',{position:[0,0,0], rotation:[ -Math.PI / 2, 0, 0 ], receiveShadow:true},
       React.createElement('planeGeometry',{args:[size, size, 1, 1]}),
-      React.createElement('meshStandardMaterial',{
-        color:groundColor,
-        aoMap: aoTex || null,
-        roughness:0.95, metalness:0.0
-      })
+      React.createElement('meshStandardMaterial',{color:groundColor, roughness:0.95, metalness:0.0})
     )
   );
 }
 
-/* ----------------------------- Brick Render ---------------------------- */
+/* ---------- bricks render ---------- */
 function BlockCell({ position, color, transparent=false, opacity=1, tile=false }){
   if (tile) {
-    // Tynd plade helt i plan (y=0), så der ikke er luftgab
+    // HELT i plan: y = 0
     return React.createElement('group',{position:[position[0], 0, position[2]]},
       React.createElement('mesh',{receiveShadow:true, userData:{isTile:true}},
         React.createElement('boxGeometry',{args:[1,0.02,1]}),
@@ -118,7 +112,7 @@ function Blocks({ blocks }){
   return React.createElement('group',{name:"WorldBlocks"},
     items.map(({pos, type, tile, opacity}) => {
       const c = COLORS.find(k=>k.id===type) || COLORS[0];
-      const y = tile ? 0.0 : pos[1]; // tiles helt i plan
+      const y = tile ? 0.0 : pos[1];
       return React.createElement(BlockCell, {
         key:`${pos[0]}|${pos[1]}|${pos[2]}`,
         position:[pos[0], y, pos[2]],
@@ -128,7 +122,7 @@ function Blocks({ blocks }){
   );
 }
 
-/* ----------------------- Collision/physics (robust) --------------------- */
+/* ---------- physics ---------- */
 let currentYaw = 0;
 function collidesAt(p, size, blocks){
   const half = { x: size.x/2, y: size.y/2, z: size.z/2 };
@@ -138,7 +132,7 @@ function collidesAt(p, size, blocks){
   for (let x=minX; x<=maxX; x++){
     for (let y=minY; y<=maxY; y++){
       for (let z=minZ; z<=maxZ; z++){
-        if (y < 0) return true; // under gulv = solid
+        if (y < 0) return true;
         const cell = blocks.get(`${x}|${y}|${z}`);
         if (cell && cell.solid === true) return true;
       }
@@ -147,8 +141,7 @@ function collidesAt(p, size, blocks){
   return false;
 }
 function supportTopAt(cx, cz, blocks){
-  // gulv ved y=0 som støtte
-  let top = 0;
+  let top = 0; // gulv i y=0
   for (let y=0; y<=64; y++){
     const c = blocks.get(`${cx}|${y}|${cz}`);
     if (c && c.solid === true) top = Math.max(top, y+1);
@@ -157,9 +150,10 @@ function supportTopAt(cx, cz, blocks){
 }
 function resolveMovement(p, v, dt, size, blocks){
   const next = { x: p.x + v.x * dt, y: p.y + v.y * dt, z: p.z + v.z * dt };
+  let test;
 
   // X
-  let test = { x: next.x, y: p.y, z: p.z };
+  test = { x: next.x, y: p.y, z: p.z };
   if (collidesAt(test, size, blocks)){
     const dir = Math.sign(test.x - p.x) || 1;
     test.x = Math.floor(test.x + (dir>0 ? size.x/2 : -size.x/2)) + (dir>0 ? 0.5 - size.x/2 : 0.5 + size.x/2);
@@ -190,8 +184,7 @@ function resolveMovement(p, v, dt, size, blocks){
       const topY = supportTopAt(cx, cz, blocks);
       test.y = topY + size.y/2;
       while (collidesAt(test, size, blocks)) test.y += 0.002;
-      v.y = 0;
-      onTop = true;
+      v.y = 0; onTop = true;
     }
   }
   p.y = test.y;
@@ -211,7 +204,7 @@ function resolveMovement(p, v, dt, size, blocks){
   return { onGround: onTop || distToTop < 0.05, distToTop };
 }
 
-/* ------------------------------- Player -------------------------------- */
+/* ---------- player ---------- */
 function PlayerController({ positionRef, blocks }){
   const ref = useRef(null);
   const vel = useRef(vec3(0,0,0));
@@ -241,7 +234,6 @@ function PlayerController({ positionRef, blocks }){
     const dt = Math.min(_dt, 1/60);
     const speedMax = 4.0, jumpV = 6.4, gravity = 12.0;
 
-    // input
     let forward = 0, strafe = 0;
     if (isDown("arrowup") || isDown("w")) forward += 1;
     if (isDown("arrowdown") || isDown("s")) forward -= 1;
@@ -273,7 +265,7 @@ function PlayerController({ positionRef, blocks }){
 
     if (ref.current) { ref.current.position.set(p.x, p.y, p.z); ref.current.rotation.y = yaw; }
 
-    // Walk cycle (ben + hofte-bounce)
+    // Walk cycle
     const planarSpeed = Math.hypot(v.x, v.z);
     const moving = planarSpeed > 0.15 && onGroundRef.current;
     const speed01 = clamp(planarSpeed / speedMax, 0, 1);
@@ -290,15 +282,15 @@ function PlayerController({ positionRef, blocks }){
 
   return React.createElement('group',{ref},
     React.createElement('group',{position:[0,0,0]},
-      // Prøv OBJ-model — fallback rendres "under" (men usynlig, hvis OBJ kommer ind)
-      React.createElement(BatmanOBJ,{ hipRef, legLRef, legRRef }),
-      React.createElement('group',{visible:false},
+      LOAD_OBJ ? React.createElement(BatmanOBJ,{ hipRef, legLRef, legRRef }) : null,
+      React.createElement('group',{visible: LOAD_OBJ /* fallback skjules hvis OBJ vises */ ? false : true},
         React.createElement(BatmanMiniFallback,{ hipRef, legLRef, legRRef })
       )
     )
   );
 }
 
+/* ---------- camera ---------- */
 function CameraRig({ playerPosRef }){
   const { camera } = useThree();
   const smooth = useRef(new THREE.Vector3());
@@ -314,7 +306,7 @@ function CameraRig({ playerPosRef }){
   return null;
 }
 
-/* -------------------------- Build helpers ------------------------------ */
+/* ---------- build helpers ---------- */
 function addBrickAt(base, brick, colorId, rot, blocks, bricks){
   const id = BRICK_ID++;
   const w = rot ? brick.l : brick.w;
@@ -328,7 +320,7 @@ function addBrickAt(base, brick, colorId, rot, blocks, bricks){
       if (cy < 0) return false;
       const key = toKey(cx,cy,cz);
       const existing = blocks.get(key);
-      if (existing && existing.solid === true) return false;   // optaget
+      if (existing && existing.solid === true) return false;
       cells.push({cx,cy,cz,key});
     }
   }
@@ -347,7 +339,7 @@ function removeBrickAtCell(cx,cy,cz, blocks, bricks){
   return true;
 }
 
-/* -------- Raycast placer (face normal → byg ovenpå/sider) -------------- */
+/* ---------- raycast placer ---------- */
 function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, getRot, worldRef }){
   const { camera } = useThree();
   const raycaster = useMemo(()=> new THREE.Raycaster(), []);
@@ -401,7 +393,7 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
       return;
     }
 
-    // fallback: jorden → læg første klods i y=0 (ikke 1)
+    // fallback: jorden → y=0 (ikke 1)
     const canvas = document.querySelector("canvas");
     const rect = canvas.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -434,12 +426,11 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
   return null;
 }
 
-/* ----------------------------- Gotham prefab --------------------------- */
+/* ---------- seed prefab floor ---------- */
 function seedGothamFloor(setBlocks){
   setBlocks(prev=>{
     const nb = new Map(prev);
     const addCell = (x,y,z,type)=> nb.set(toKey(x,y,z), {pos:[x,y,z], type, brick:-1, solid:true});
-    // Fortov i y=0 (ikke svævende)
     for(let x=-10;x<=10;x++){
       addCell(x,0,2,"darkgray");
       addCell(x,0,3,"lightgray");
@@ -452,20 +443,14 @@ function seedGothamFloor(setBlocks){
   });
 }
 
-/* --------------------------------- UI ---------------------------------- */
+/* ---------- UI ---------- */
 function ColorHotbar({ colors, selected, onSelect }){
   return React.createElement('div',{style:{
     display:"flex", gap:8, padding:10, borderRadius:16, background:"rgba(0,0,0,0.35)", backdropFilter:"blur(6px)"
   }},
     colors.map((c, i) => React.createElement('div',{
-      key:c.id,
-      onClick:()=>onSelect(i),
-      title:c.label,
-      style:{
-        width:28, height:28, borderRadius:999, border:"2px solid rgba(255,255,255,.4)",
-        background:c.color, opacity:c.opacity ?? 1, cursor:"pointer",
-        outline: i===selected ? "2px solid #fff" : "none"
-      }
+      key:c.id, onClick:()=>onSelect(i), title:c.label,
+      style:{width:28, height:28, borderRadius:999, border:"2px solid rgba(255,255,255,.4)", background:c.color, opacity:c.opacity ?? 1, cursor:"pointer", outline: i===selected ? "2px solid #fff" : "none"}
     }))
   );
 }
@@ -535,11 +520,11 @@ function btnU(){
   return { padding:"8px 12px", borderRadius:12, background:"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.2)", color:"#fff", cursor:"pointer" };
 }
 
-/* --------------------------------- App --------------------------------- */
+/* ---------- App ---------- */
 function App(){
   const [blocks, setBlocks] = useState(() => {
     const m = new Map();
-    // Base: dekorative tiles i y=0 (ikke solide) – HELT i plan (ingen svæven)
+    // dekorative tiles i y=0 (IKKE solide)
     for (let x=-14; x<=14; x++) for (let z=-14; z<=14; z++){
       m.set(`${x}|0|${z}`, { pos:[x,0,z], type: (x+z)%2===0?"darkgray":"lightgray", brick: -1, solid:false, tile:true, opacity:0.9 });
     }
@@ -580,16 +565,6 @@ function App(){
   const [showHelp, setShowHelp] = useState(true);
   useEffect(() => { const t = setTimeout(()=>setShowHelp(false), 6000); return () => clearTimeout(t); }, []);
 
-  const btnPropsNoFocus = { tabIndex:-1, onMouseDown:(e)=>e.preventDefault() };
-
-  // (valgfri) AO-tekstur til jorden
-  const aoTex = useMemo(()=>{
-    const loader = new THREE.TextureLoader();
-    const t = loader.load("assets/textures/internal_ground_ao_texture.jpeg", undefined, undefined, ()=>{});
-    if (t) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(16,16); }
-    return t || null;
-  },[]);
-
   return React.createElement('div',{style:{width:"100%",height:"100%",position:"relative",background:"#000", color:"#fff"}},
     React.createElement(Canvas, {
       shadows:true,
@@ -603,7 +578,7 @@ function App(){
       React.createElement('directionalLight',{position:[5,10,5], intensity: theme==="day" ? 1.2 : 0.9, castShadow:true, color: theme==="day" ? "#ffffff" : "#a0b8ff"}),
 
       React.createElement('group',{ref:worldRef},
-        React.createElement(Ground,{groundColor: theme==="day" ? "#2e3136" : "#202328", aoTex}),
+        React.createElement(Ground,{groundColor: theme==="day" ? "#2e3136" : "#202328"}),
         React.createElement(Blocks,{blocks}),
         React.createElement(GothamMini,{theme})
       ),
@@ -615,21 +590,17 @@ function App(){
 
     // HUD + version
     React.createElement('div',{style:{position:"absolute", top:16, right:16, display:"flex", gap:8, alignItems:"center"}},
-      React.createElement('button',{...btnPropsNoFocus, onClick:()=>setTheme(t=>t==="day"?"night":"day"),
-        style:toggleStyle(theme==="day")}, theme==="day"?"☀️ Dag":"🌙 Nat"),
+      React.createElement('button',{onClick:()=>setTheme(t=>t==="day"?"night":"day"), style:toggleStyle(theme==="day")}, theme==="day"?"☀️ Dag":"🌙 Nat"),
       React.createElement('div',{style:{textAlign:'right'}},
-        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Safe v14'),
+        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Safe v14.1'),
         React.createElement('div',{style:{color:"#fff", fontSize:16, fontWeight:600}},'LEGO Batman – Voxel Builder')
       )
     ),
 
     React.createElement('div',{style:{position:"absolute", top:16, left:16, display:"flex", gap:8, flexWrap:"wrap"}},
-      React.createElement('button',{...btnPropsNoFocus, onClick:()=>setSidebarOpen(v=>!v), style:btnU()},
-        sidebarOpen?"Skjul":"Klodser (B)"),
-      React.createElement('button',{...btnPropsNoFocus, onClick:()=>setMode(m=>m==="build"?"gadget":"build"), style:btnU()},
-        `Tilstand: ${mode==="build"?"Byg":"Gadget"} (Q)`),
-      React.createElement('button',{...btnPropsNoFocus, onClick:()=>setBrickRot(r=>1-r), style:btnU()},
-        `Rotation (R): ${brickRot? "90°":"0°"}`)
+      React.createElement('button',{onClick:()=>setSidebarOpen(v=>!v), style:btnU()}, sidebarOpen?"Skjul":"Klodser (B)"),
+      React.createElement('button',{onClick:()=>setMode(m=>m==="build"?"gadget":"build"), style:btnU()}, `Tilstand: ${mode==="build"?"Byg":"Gadget"} (Q)`),
+      React.createElement('button',{onClick:()=>setBrickRot(r=>1-r), style:btnU()}, `Rotation (R): ${brickRot? "90°":"0°"}`)
     ),
 
     React.createElement('div',{style:{position:"absolute", left:"50%", transform:"translateX(-50%)", bottom:16}},
@@ -650,5 +621,12 @@ function toggleStyle(active){
   return { padding:"6px 10px", borderRadius:10, border:"1px solid rgba(255,255,255,.25)", background:"rgba(255,255,255,.08)", cursor:"pointer", outline: active ? "2px solid #fff" : "none" };
 }
 
-/* ------------------------------ Mount app ------------------------------ */
-createRoot(document.getElementById('root')).render(React.createElement(App));
+/* ---------- mount med try/catch ---------- */
+try {
+  const rootEl = document.getElementById('root');
+  if (!rootEl) throw new Error("#root mangler i index.html");
+  createRoot(rootEl).render(React.createElement(App));
+} catch (e) {
+  console.error("Mount error", e);
+  window.__showErrorOverlay?.(e.message, e.stack);
+}
