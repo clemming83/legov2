@@ -1,6 +1,6 @@
-// LEGO Batman – Voxel Builder (Safe v11)
-// Fixes: præcis top-snap (kan stå på klodser), ingen svæven, auto-center på top,
-// roligere kamera, og simpel ben-animering ved gang.
+// LEGO Batman – Voxel Builder (Safe v12)
+// Fixes: korrekt gulv-støtte (ingen svæv), hop fra gulv, auto-center kun når stillestående,
+// ben-anim rigget ved hofte (tydelig gangcyklus), roligt kamera.
 
 import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
 import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
@@ -126,7 +126,7 @@ function collidesAt(p, size, blocks){
   for (let x=minX; x<=maxX; x++){
     for (let y=minY; y<=maxY; y++){
       for (let z=minZ; z<=maxZ; z++){
-        if (y < 0) return true; // under gulv er solid
+        if (y < 0) return true; // under gulv er solid "bedrock"
         const cell = blocks.get(`${x}|${y}|${z}`);
         if (cell && cell.solid === true) return true;
       }
@@ -135,32 +135,31 @@ function collidesAt(p, size, blocks){
   return false;
 }
 
-/** Højden (y) på øverste solide celle under (cx,cz); eller -Infinity hvis ingen */
+/** Højden (y) på øverste solide celle under (cx,cz); eller 0 hvis kun gulv */
 function supportTopAt(cx, cz, blocks){
-  // Søg et lille interval omkring nul og opad nogle lag
   let top = -Infinity;
-  for (let y=-1; y<=32; y++){
+  for (let y=-1; y<=64; y++){
     const c = blocks.get(`${cx}|${y}|${cz}`);
     if (c && c.solid === true) top = Math.max(top, y + 1);
   }
+  if (top === -Infinity) return 0; // gulv/plane ved y=0 som støtte
   return top;
 }
 
-/** Aksial sweep-resolve + præcis top-snap */
-function resolveMovement(p, v, dt, size, blocks, prevPos){
+/** Aksial sweep-resolve + præcis top-snap; returnerer også dist til støtte */
+function resolveMovement(p, v, dt, size, blocks){
   const next = { x: p.x + v.x * dt, y: p.y + v.y * dt, z: p.z + v.z * dt };
 
-  // 1) X-akse
+  // X
   let test = { x: next.x, y: p.y, z: p.z };
   if (collidesAt(test, size, blocks)){
     const dir = Math.sign(test.x - p.x) || 1;
-    // skub ud til cellegrænse
     test.x = Math.floor(test.x + (dir>0 ? size.x/2 : -size.x/2)) + (dir>0 ? 0.5 - size.x/2 : 0.5 + size.x/2);
     while (collidesAt(test, size, blocks)) test.x -= dir * 0.01;
   }
   p.x = test.x;
 
-  // 2) Z-akse
+  // Z
   test = { x: p.x, y: p.y, z: next.z };
   if (collidesAt(test, size, blocks)){
     const dir = Math.sign(test.z - p.z) || 1;
@@ -169,73 +168,75 @@ function resolveMovement(p, v, dt, size, blocks, prevPos){
   }
   p.z = test.z;
 
-  // 3) Y-akse
+  // Y
   test = { x: p.x, y: next.y, z: p.z };
-  let hitY = false;
+  let onTop = false;
   if (collidesAt(test, size, blocks)){
-    hitY = true;
-    const dir = Math.sign(test.y - p.y) || 1; // op eller ned
+    const dir = Math.sign(test.y - p.y) || 1;
     if (dir > 0){
-      // hoved i loft → klem lige under loftet
-      test.y = Math.floor(test.y + size.y/2) + 0.5 - size.y/2 - EPS;
+      test.y = Math.floor(test.y + size.y/2) + 0.5 - size.y/2 - EPS; // under loft
       while (collidesAt(test, size, blocks)) test.y -= 0.005;
       v.y = Math.min(v.y, 0);
     } else {
-      // land på top: snap til præcis top af støttecellen
       const cx = Math.round(p.x), cz = Math.round(p.z);
       const topY = supportTopAt(cx, cz, blocks);
-      if (topY !== -Infinity){
-        test.y = topY + size.y/2; // top af cellen + halv spillerhøjde
-        while (collidesAt(test, size, blocks)) test.y += 0.002;
-      } else {
-        // ingen støtte, skub op til lige over gulv ved behov
-        test.y = Math.max(test.y, 0 + size.y/2);
-      }
+      test.y = topY + size.y/2;
+      while (collidesAt(test, size, blocks)) test.y += 0.002;
       v.y = 0;
+      onTop = true;
     }
   }
   p.y = test.y;
 
-  // 4) Når vi står (v.y≈0, og støtte under os) → auto-center langsomt ind til cellens center
+  // Afstand til støtte (til hop-buffer)
   const cx = Math.round(p.x), cz = Math.round(p.z);
   const topY = supportTopAt(cx, cz, blocks);
-  const onTop = topY !== -Infinity && Math.abs((topY + size.y/2) - p.y) < 0.08;
-  if (onTop){
-    const targetX = cx, targetZ = cz;
-    p.x = THREE.MathUtils.lerp(p.x, targetX, 0.35); // glid ind til center → ingen “skub ud”
-    p.z = THREE.MathUtils.lerp(p.z, targetZ, 0.35);
+  const distToTop = (p.y - size.y/2) - topY;
+
+  // Auto-center KUN når vi står næsten stille og ovenpå
+  const planarSpeed = Math.hypot(v.x, v.z);
+  const shouldCenter = onTop && planarSpeed < 0.18;
+  if (shouldCenter){
+    p.x = THREE.MathUtils.lerp(p.x, cx, 0.25);
+    p.z = THREE.MathUtils.lerp(p.z, cz, 0.25);
   }
 
-  // 5) Gulv-sikkerhed
   if (p.y < size.y/2) p.y = size.y/2;
 
-  // Returner om vi står “på noget”
-  return { onGround: onTop };
+  return { onGround: onTop || distToTop < 0.05, distToTop };
 }
 
 /* ------------------------------- Player -------------------------------- */
-function BatmanMinifig({ legRefs }){
+function BatmanMinifig({ hipRef, legLRef, legRRef }){
   const body = "#151515", cowl = "#0d0d0d", belt = "#f1c40f", gray = "#444";
+  // Rig: et "hip"-group (pivot), ben som child-grupper med mesh offset nedad
   return React.createElement('group',null,
-    // Ben (referencer til animation)
-    React.createElement('mesh',{ref:legRefs.left, position:[ -0.15, 0.25, 0 ], castShadow:true},
-      React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}),
-      React.createElement('meshStandardMaterial',{color:gray})
-    ),
-    React.createElement('mesh',{ref:legRefs.right, position:[ 0.15, 0.25, 0 ], castShadow:true},
-      React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}),
-      React.createElement('meshStandardMaterial',{color:gray})
-    ),
-    // Torso/arm/segl
-    React.createElement('mesh',{position:[0, 0.85, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.6,0.7,0.35]}), React.createElement('meshStandardMaterial',{color:body})),
-    React.createElement('mesh',{position:[0, 0.55, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.62,0.1,0.37]}), React.createElement('meshStandardMaterial',{color:belt})),
-    React.createElement('mesh',{position:[ -0.45, 0.85, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.2,0.5,0.2]}), React.createElement('meshStandardMaterial',{color:body})),
-    React.createElement('mesh',{position:[ 0.45, 0.85, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.2,0.5,0.2]}), React.createElement('meshStandardMaterial',{color:body})),
-    // Hoved + ører + kappe
-    React.createElement('mesh',{position:[0, 1.35, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.35,0.35,0.3]}), React.createElement('meshStandardMaterial',{color:cowl})),
-    React.createElement('mesh',{position:[ -0.12, 1.6, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.07,0.15,0.07]}), React.createElement('meshStandardMaterial',{color:cowl})),
-    React.createElement('mesh',{position:[ 0.12, 1.6, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.07,0.15,0.07]}), React.createElement('meshStandardMaterial',{color:cowl})),
-    React.createElement('mesh',{position:[0, 0.9, -0.23], castShadow:true}, React.createElement('boxGeometry',{args:[0.6,0.8,0.02]}), React.createElement('meshStandardMaterial',{color:cowl}))
+    // Hofte-pivot (til let bounce)
+    React.createElement('group',{ref:hipRef, position:[0,0,0]},
+      // Ben – grupper med pivot i hoften
+      React.createElement('group',{ref:legLRef, position:[-0.18, 0.50, 0]},
+        React.createElement('mesh',{position:[0,-0.25,0], castShadow:true},
+          React.createElement('boxGeometry',{args:[0.26,0.5,0.35]}),
+          React.createElement('meshStandardMaterial',{color:gray})
+        )
+      ),
+      React.createElement('group',{ref:legRRef, position:[ 0.18, 0.50, 0]},
+        React.createElement('mesh',{position:[0,-0.25,0], castShadow:true},
+          React.createElement('boxGeometry',{args:[0.26,0.5,0.35]}),
+          React.createElement('meshStandardMaterial',{color:gray})
+        )
+      ),
+      // Torso/arm/segl
+      React.createElement('mesh',{position:[0, 0.85, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.6,0.7,0.35]}), React.createElement('meshStandardMaterial',{color:body})),
+      React.createElement('mesh',{position:[0, 0.55, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.62,0.1,0.37]}), React.createElement('meshStandardMaterial',{color:belt})),
+      React.createElement('mesh',{position:[ -0.45, 0.85, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.2,0.5,0.2]}), React.createElement('meshStandardMaterial',{color:body})),
+      React.createElement('mesh',{position:[ 0.45, 0.85, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.2,0.5,0.2]}), React.createElement('meshStandardMaterial',{color:body})),
+      // Hoved + ører + kappe
+      React.createElement('mesh',{position:[0, 1.35, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.35,0.35,0.3]}), React.createElement('meshStandardMaterial',{color:cowl})),
+      React.createElement('mesh',{position:[ -0.12, 1.6, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.07,0.15,0.07]}), React.createElement('meshStandardMaterial',{color:cowl})),
+      React.createElement('mesh',{position:[ 0.12, 1.6, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.07,0.15,0.07]}), React.createElement('meshStandardMaterial',{color:cowl})),
+      React.createElement('mesh',{position:[0, 0.9, -0.23], castShadow:true}, React.createElement('boxGeometry',{args:[0.6,0.8,0.02]}), React.createElement('meshStandardMaterial',{color:cowl}))
+    )
   );
 }
 
@@ -244,8 +245,11 @@ function PlayerController({ positionRef, blocks }){
   const vel = useRef(vec3(0,0,0));
   const onGroundRef = useRef(true);
   const walkPhase = useRef(0);
-  const legLeft = useRef(null);
-  const legRight = useRef(null);
+
+  // rig refs
+  const hipRef = useRef(null);
+  const legLRef = useRef(null);
+  const legRRef = useRef(null);
 
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -264,7 +268,7 @@ function PlayerController({ positionRef, blocks }){
 
   useFrame((state, _dt) => {
     const dt = Math.min(_dt, 1/60);
-    const speedMax = 4.2, jumpV = 6.6, gravity = 12.0;
+    const speedMax = 4.0, jumpV = 6.4, gravity = 12.0;
 
     // input
     let forward = 0, strafe = 0;
@@ -288,19 +292,19 @@ function PlayerController({ positionRef, blocks }){
     v.z = THREE.MathUtils.lerp(v.z, wish.z * speedMax, 1 - Math.exp(-accel * dt));
     v.y += -gravity * dt;
 
-    // hop
-    if (onGroundRef.current && (isDown(" ") || isDown("space"))) { v.y = jumpV; onGroundRef.current = false; }
-
     // resolve
     const p = positionRef.current;
-    const prev = { x:p.x, y:p.y, z:p.z };
-    const res = resolveMovement(p, v, dt, {x:0.6,y:1.7,z:0.6}, blocks, prev);
+    const res = resolveMovement(p, v, dt, {x:0.6,y:1.7,z:0.6}, blocks);
     onGroundRef.current = res.onGround;
 
-    // friktion når vi står
-    if (onGroundRef.current){
-      v.x *= 0.82; v.z *= 0.82;
+    // hop: tillad hvis onGround ELLER tæt på gulv/klods-top
+    if ((isDown(" ") || isDown("space")) && (onGroundRef.current || res.distToTop < 0.05)) {
+      v.y = jumpV;
+      onGroundRef.current = false;
     }
+
+    // friktion når vi står
+    if (onGroundRef.current){ v.x *= 0.84; v.z *= 0.84; }
 
     // opdater mesh
     if (ref.current) {
@@ -308,21 +312,26 @@ function PlayerController({ positionRef, blocks }){
       ref.current.rotation.y = yaw;
     }
 
-    // Walk cycle (ben)
+    // Walk cycle (ben + hofte-bounce)
     const planarSpeed = Math.hypot(v.x, v.z);
     const moving = planarSpeed > 0.15 && onGroundRef.current;
-    const targetSpeed = clamp((planarSpeed / speedMax), 0, 1);
-    walkPhase.current += (moving ? 10 : 6) * dt * (0.5 + 0.5*targetSpeed);
-    const amp = moving ? (0.6 * targetSpeed) : 0;
+    const speed01 = clamp(planarSpeed / speedMax, 0, 1);
+
+    walkPhase.current += (moving ? 10 : 6) * dt * (0.6 + 0.4*speed01);
+    const amp = moving ? (0.9 * (0.6 + 0.4*speed01)) : 0;
     const leftAng = Math.sin(walkPhase.current) * amp;
     const rightAng = -leftAng;
+    const hipBob = moving ? Math.abs(Math.sin(walkPhase.current*2)) * 0.06 : 0;
 
-    if (legLeft.current)  legLeft.current.rotation.x = leftAng;
-    if (legRight.current) legRight.current.rotation.x = rightAng;
+    if (legLRef.current)  legLRef.current.rotation.x = leftAng;
+    if (legRRef.current)  legRRef.current.rotation.x = rightAng;
+    if (hipRef.current)   hipRef.current.position.y = 0 + hipBob;
   });
 
   return React.createElement('group',{ref},
-    React.createElement('group',{position:[0,0,0]}, React.createElement(BatmanMinifig,{ legRefs:{left:legLeft, right:legRight} }))
+    React.createElement('group',{position:[0,0,0]},
+      React.createElement(BatmanMinifig,{ hipRef, legLRef, legRRef })
+    )
   );
 }
 
@@ -331,7 +340,6 @@ function CameraRig({ playerPosRef }){
   const smooth = useRef(new THREE.Vector3());
   useFrame(() => {
     const p = playerPosRef.current;
-    // roligt chase-cam
     const offset = new THREE.Vector3(0, 1.95, 4.5).applyAxisAngle(new THREE.Vector3(0,1,0), currentYaw);
     const target = new THREE.Vector3(p.x, p.y + 0.95, p.z);
     const desired = target.clone().add(offset);
@@ -360,7 +368,6 @@ function addBrickAt(base, brick, colorId, rot, blocks, bricks){
       cells.push({cx,cy,cz,key});
     }
   }
-  // Erstat evt. tiles (solid:false) ved y=0
   for (const c of cells) blocks.set(c.key, { pos:[c.cx,c.cy,c.cz], type: colorId, brick:id, solid:true, tile:false });
   bricks.set(id, cells.map(c=>c.key));
   return true;
@@ -389,8 +396,7 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
     pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
     const root = worldRef.current;
-    const hits = root ? raycaster.intersectObject(root, true) : [];
-    return hits;
+    return root ? raycaster.intersectObject(root, true) : [];
   };
 
   const handlePointerDown = (e) => {
@@ -619,7 +625,7 @@ function App(){
       React.createElement('button',{...btnPropsNoFocus, onClick:()=>setTheme(t=>t==="day"?"night":"day"),
         style:toggleStyle(theme==="day")}, theme==="day"?"☀️ Dag":"🌙 Nat"),
       React.createElement('div',{style:{textAlign:'right'}},
-        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Safe v11'),
+        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Safe v12'),
         React.createElement('div',{style:{color:"#fff", fontSize:16, fontWeight:600}},'LEGO Batman – Voxel Builder')
       )
     ),
