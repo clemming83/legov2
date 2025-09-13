@@ -3,20 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LEGO Batman – Voxel Builder (Stable, no-drei)</title>
+    <title>LEGO Batman – Voxel Builder (Stable v2)</title>
     <style>
       html, body, #root { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#000; color:#fff; }
       .button { padding:8px 12px; border-radius:12px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.2); color:white; cursor:pointer; }
-      .hud { position:absolute; left:50%; transform:translateX(-50%); bottom:16px; display:flex; gap:8px; padding:8px; border-radius:16px; background:rgba(0,0,0,0.35); backdrop-filter: blur(6px); }
+      .hud { position:absolute; left:50%; transform:translateX(-50%); bottom:16px; display:flex; gap:8px; padding:10px; border-radius:16px; background:rgba(0,0,0,0.35); backdrop-filter: blur(6px); }
       .crosshair { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:16px; height:16px; border-radius:999px; border:1px solid rgba(255,255,255,0.7); pointer-events:none; }
-      .topbar { position:absolute; top:16px; left:16px; display:flex; gap:8px; flex-wrap:wrap; }
-      .title { position:absolute; top:16px; right:16px; text-align:right; }
+      .topbar-left { position:absolute; top:16px; left:16px; display:flex; gap:8px; flex-wrap:wrap; }
+      .topbar-right { position:absolute; top:16px; right:16px; display:flex; gap:8px; align-items:center;}
+      .title { text-align:right; }
       .sidebar { position:absolute; top:0; left:0; height:100%; width:300px; background:rgba(24,24,27,.92); color:#fff; padding:16px; overflow-y:auto; backdrop-filter: blur(6px); box-shadow:0 0 24px rgba(0,0,0,.5); border-right:1px solid rgba(255,255,255,.08)}
-      .palette { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-      .palette-item { display:flex; gap:8px; align-items:center; background:rgba(255,255,255,.05); padding:8px; border-radius:12px; border:1px solid rgba(255,255,255,.1); }
+      .bricklist { display:grid; grid-template-columns:1fr; gap:10px; }
+      .brick-item { display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,.05); padding:10px; border-radius:12px; border:1px solid rgba(255,255,255,.1); cursor:pointer; }
+      .brick-item.active { outline:2px solid #fff; }
+      .dot { width:26px; height:26px; border-radius:999px; border:2px solid rgba(255,255,255,.4); cursor:pointer; }
+      .dot.active { border-color:#fff; transform:scale(1.06); }
+      .palette-row { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-top:12px; }
       .hint { position:absolute; top:16px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,.5); padding:8px 12px; border-radius:12px; font-size:13px; }
       #err { position: absolute; bottom: 10px; left: 10px; right: 10px; background: rgba(255,0,0,.15); color:#fff; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; padding: 8px; border-radius: 8px; display:none; white-space: pre-wrap;}
       #ok  { position: absolute; top:10px; left:10px; background: rgba(0,255,127,.15); color:#b7ffcf; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 6px 10px; border-radius: 8px; font-size: 12px; display:none; }
+      .toggle { padding:6px 10px; border-radius:10px; border:1px solid rgba(255,255,255,.25); background:rgba(255,255,255,.08); cursor:pointer; }
+      .toggle.active { outline:2px solid #fff; }
+      .pill { padding:6px 10px; border-radius:999px; border:1px solid rgba(255,255,255,.25); background:rgba(255,255,255,.08); }
     </style>
   </head>
   <body>
@@ -43,39 +51,155 @@
       const vec3 = (x=0,y=0,z=0) => ({x,y,z});
       const toKey = (x,y,z) => `${x}|${y}|${z}`;
 
-      const BLOCK_TYPES = [
+      // Farver
+      const COLORS = [
         { id: "black", label: "Black", color: "#111111" },
         { id: "darkgray", label: "Dark Gray", color: "#3a3a3a" },
         { id: "lightgray", label: "Light Gray", color: "#9aa0a6" },
         { id: "yellow", label: "Yellow", color: "#ffd400" },
         { id: "blue", label: "Blue", color: "#1565c0" },
         { id: "purple", label: "Purple", color: "#6a1b9a" },
-        { id: "transparent", label: "Translucent", color: "#a0d8ff", transparent: true, opacity: 0.5 },
+        { id: "red", label: "Red", color: "#d32f2f" },
+        { id: "green", label: "Green", color: "#2e7d32" },
+        { id: "white", label: "White", color: "#eeeeee" },
+        { id: "trans", label: "Translucent", color: "#a0d8ff", transparent: true, opacity: 0.5 },
       ];
-      const DEFAULT_HOTBAR = ["black","darkgray","lightgray","yellow","blue","purple","transparent","black","yellow"];
+      const DEFAULT_COLOR_INDEX = 3; // yellow
+
+      // Klods-størrelser (studs)
+      const BRICKS = [
+        { id:"2x2", w:2, l:2 },
+        { id:"2x4", w:2, l:4 },
+        { id:"2x6", w:2, l:6 },
+        { id:"4x4", w:4, l:4 },
+        { id:"4x6", w:4, l:6 },
+      ];
+      const BRICK_MAP = new Map(BRICKS.map(b=>[b.id,b]));
+      let BRICK_ID = 1;
+
+      // ---------- Audio (BG + SFX) ----------
+      function useAudio(){
+        const ctxRef = useRef(null);
+        const bgGain = useRef(null);
+        const sfxGain = useRef(null);
+        const timers = useRef([]);
+
+        const ensureCtx = () => {
+          if (!ctxRef.current) {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            ctxRef.current = ctx;
+            bgGain.current = ctx.createGain(); bgGain.current.gain.value = 0.0; bgGain.current.connect(ctx.destination);
+            sfxGain.current = ctx.createGain(); sfxGain.current.gain.value = 0.6; sfxGain.current.connect(ctx.destination);
+          }
+          return ctxRef.current;
+        };
+
+        const startBG = () => {
+          const ctx = ensureCtx();
+          stopBG();
+          // enkel "minecraft-agtig" pad: langsom akkord (to oscillators)
+          const rootFreq = 174.61; // F3 ish
+          const makeOsc = (f, type="sine")=>{
+            const o = ctx.createOscillator();
+            const g = ctx.createGain(); g.gain.value = 0.0;
+            o.type = type; o.frequency.value = f; o.connect(g); g.connect(bgGain.current);
+            o.start();
+            return {o,g};
+          };
+          const o1 = makeOsc(rootFreq, "sine");
+          const o2 = makeOsc(rootFreq*1.5, "triangle");
+          const o3 = makeOsc(rootFreq*1.25, "sine");
+          const up = ()=>{ o1.g.gain.linearRampToValueAtTime(0.05, ctx.currentTime+2);
+                           o2.g.gain.linearRampToValueAtTime(0.04, ctx.currentTime+3);
+                           o3.g.gain.linearRampToValueAtTime(0.03, ctx.currentTime+4); };
+          const pulse = ()=>{ // langsom filter/pitch drift
+            o2.o.frequency.linearRampToValueAtTime(rootFreq*1.52, ctx.currentTime+6);
+            o2.o.frequency.linearRampToValueAtTime(rootFreq*1.48, ctx.currentTime+12);
+            o3.o.frequency.linearRampToValueAtTime(rootFreq*1.22, ctx.currentTime+6);
+            o3.o.frequency.linearRampToValueAtTime(rootFreq*1.28, ctx.currentTime+12);
+          };
+          up(); pulse();
+          timers.current.push(setInterval(pulse, 12000));
+          // gem
+          timers.current.push({ stop: ()=>{ o1.o.stop(); o2.o.stop(); o3.o.stop(); }});
+        };
+
+        const stopBG = () => {
+          timers.current.forEach(t => typeof t === "object" && t.stop ? t.stop() : clearInterval(t));
+          timers.current = [];
+        };
+
+        const setBGEnabled = (on) => {
+          const ctx = ensureCtx();
+          if (on){ startBG(); bgGain.current.gain.linearRampToValueAtTime(0.5, ctx.currentTime+1.5); }
+          else { bgGain.current.gain.linearRampToValueAtTime(0.0, ctx.currentTime+0.5); stopBG(); }
+        };
+
+        const playSFX = (type="click") => {
+          const ctx = ensureCtx();
+          const g = ctx.createGain();
+          g.connect(sfxGain.current);
+          if (type === "place" || type === "remove"){
+            const o = ctx.createOscillator();
+            o.type = "square";
+            o.frequency.value = type==="place" ? 660 : 440;
+            g.gain.value = 0.0;
+            o.connect(g);
+            o.start();
+            const now = ctx.currentTime;
+            g.gain.linearRampToValueAtTime(0.15, now+0.01);
+            g.gain.linearRampToValueAtTime(0.0, now+0.12);
+            o.stop(now+0.13);
+          } else if (type === "throw"){
+            const o = ctx.createOscillator();
+            o.type = "sawtooth";
+            o.frequency.setValueAtTime(880, ctx.currentTime);
+            o.connect(g);
+            g.gain.value = 0.0;
+            const now = ctx.currentTime;
+            g.gain.linearRampToValueAtTime(0.1, now+0.01);
+            o.frequency.exponentialRampToValueAtTime(220, now+0.25);
+            g.gain.linearRampToValueAtTime(0.0, now+0.25);
+            o.stop(now+0.26);
+          }
+        };
+
+        const setSFXEnabled = (on) => {
+          const ctx = ensureCtx();
+          sfxGain.current.gain.linearRampToValueAtTime(on ? 0.6 : 0.0, ctx.currentTime+0.05);
+        };
+
+        // aktiver lyd første gang brugeren klikker
+        useEffect(() => {
+          const onFirstInteract = () => { ensureCtx(); window.removeEventListener("pointerdown", onFirstInteract); };
+          window.addEventListener("pointerdown", onFirstInteract);
+          return () => window.removeEventListener("pointerdown", onFirstInteract);
+        }, []);
+
+        return { setBGEnabled, playSFX, setSFXEnabled };
+      }
 
       // ---------- World ----------
-      function Ground({ size = 200 }) {
+      function Ground({ size = 200, groundColor="#2a2a2d" }) {
         const { scene } = useThree();
         useEffect(() => { scene.fog = null; }, [scene]);
         return (
           React.createElement('mesh',{rotation:[ -Math.PI / 2, 0, 0 ], receiveShadow:true},
             React.createElement('planeGeometry',{args:[size, size, size, size]}),
-            React.createElement('meshStandardMaterial',{color:"#2a2a2d"})
+            React.createElement('meshStandardMaterial',{color:groundColor})
           )
         );
       }
 
-      function GradientSky() {
-        const { scene, gl } = useThree();
+      function GradientSky({ mode="night" }) {
+        const { gl } = useThree();
         useEffect(() => {
-          // enkel gradient baggrund via renderer clear color
-          gl.setClearColor(new THREE.Color(0x06080f)); // mørk blå/sort
-        }, [gl, scene]);
+          gl.setClearColor(new THREE.Color(mode==="day" ? 0x87b6ff : 0x06080f));
+        }, [gl, mode]);
         return null;
       }
 
-      function StarsSimple({ count = 500 }) {
+      function StarsSimple({ count = 600, visible=true }) {
         const ref = useRef();
         const positions = useMemo(() => {
           const arr = new Float32Array(count * 3);
@@ -89,6 +213,7 @@
           }
           return arr;
         }, [count]);
+        if (!visible) return null;
         return React.createElement('points',{ref},
           React.createElement('bufferGeometry',null,
             React.createElement('bufferAttribute',{attach:"attributes-position", array:positions, itemSize:3, count:positions.length/3})
@@ -115,9 +240,13 @@
       function Blocks({ blocks }){
         const items = [...blocks.values()];
         return React.createElement('group',null,
-          items.map(({pos, type}) => {
-            const bt = BLOCK_TYPES.find(b=>b.id===type) || BLOCK_TYPES[0];
-            return React.createElement(BlockMesh, { key:`${pos[0]}|${pos[1]}|${pos[2]}`, position:pos, color:bt.color, transparent:!!bt.transparent, opacity:bt.opacity ?? 1 });
+          items.map(({pos, type, transparent, opacity}) => {
+            const col = COLORS.find(c=>c.id===type) || COLORS[0];
+            return React.createElement(BlockMesh, {
+              key:`${pos[0]}|${pos[1]}|${pos[2]}`,
+              position:pos, color:col.color,
+              transparent:!!col.transparent, opacity:col.opacity ?? 1
+            });
           })
         );
       }
@@ -138,42 +267,75 @@
         );
       }
 
-      // ---------- Collision ----------
+      // ---------- Collision with step-up ----------
       let currentYaw = 0;
-      function aabbVsBlocks(next, size, blocks){
+
+      function collidesAt(p, size, blocks){
         const half = { x: size.x/2, y: size.y/2, z: size.z/2 };
-        const collides = (p) => {
-          const minX = Math.floor(p.x - half.x), maxX = Math.floor(p.x + half.x);
-          const minY = Math.floor(p.y - half.y), maxY = Math.floor(p.y + half.y);
-          const minZ = Math.floor(p.z - half.z), maxZ = Math.floor(p.z + half.z);
-          for (let x=minX; x<=maxX; x++){
-            for (let y=minY; y<=maxY; y++){
-              for (let z=minZ; z<=maxZ; z++){
-                if (blocks.has(`${x}|${y}|${z}`)) return true;
-              }
+        const minX = Math.floor(p.x - half.x), maxX = Math.floor(p.x + half.x);
+        const minY = Math.floor(p.y - half.y), maxY = Math.floor(p.y + half.y);
+        const minZ = Math.floor(p.z - half.z), maxZ = Math.floor(p.z + half.z);
+        for (let x=minX; x<=maxX; x++){
+          for (let y=minY; y<=maxY; y++){
+            for (let z=minZ; z<=maxZ; z++){
+              if (blocks.has(`${x}|${y}|${z}`)) return true;
             }
           }
-          return false;
-        };
-        const pos = { ...next };
-        const tryX = { x: pos.x, y: pos.y, z: pos.z };
-        if (collides(tryX)){
-          const dir = Math.sign(tryX.x - Math.round(tryX.x));
-          while (collides(tryX)) tryX.x += (dir===0? (pos.x>=0?1:-1):dir) * 0.01;
         }
-        pos.x = tryX.x;
-        const tryZ = { x: pos.x, y: pos.y, z: pos.z };
-        if (collides(tryZ)){
-          const dir = Math.sign(tryZ.z - Math.round(tryZ.z));
-          while (collides(tryZ)) tryZ.z += (dir===0? (pos.z>=0?1:-1):dir) * 0.01;
+        return false;
+      }
+      function tryStepUp(basePos, tryPos, size, blocks, maxStep=0.6){
+        const inc = 0.1;
+        const stepped = { x: tryPos.x, y: basePos.y, z: tryPos.z };
+        for (let h=inc; h<=maxStep+1e-6; h+=inc){
+          stepped.y = basePos.y + h;
+          if (!collidesAt(stepped, size, blocks)) return { ok:true, pos: { ...stepped } };
         }
-        pos.z = tryZ.z;
-        const tryY = { x: pos.x, y: pos.y, z: pos.z };
-        if (collides(tryY)){
-          const dir = Math.sign(tryY.y - Math.round(tryY.y));
-          while (collides(tryY)) tryY.y += (dir===0?1:dir) * 0.01;
+        return { ok:false, pos: tryPos };
+      }
+      function snapToTop(pos, size, blocks){
+        const belowY = Math.floor(pos.y - size.y/2 - 0.001);
+        const cx = Math.round(pos.x), cz = Math.round(pos.z);
+        for (let dy=0; dy<=2; dy++){
+          const y = belowY - dy;
+          if (blocks.has(`${cx}|${y}|${cz}`)){
+            const top = y + 1 + size.y/2;
+            if (pos.y < top + 0.12){ pos.y = top; }
+            break;
+          }
         }
-        pos.y = tryY.y;
+      }
+      function aabbVsBlocks(next, size, blocks, currentY, stepHeight=0.6){
+        const pos = { x: next.x, y: next.y, z: next.z };
+        let testX = { x: pos.x, y: currentY, z: pos.z };
+        if (collidesAt(testX, size, blocks)){
+          const stepped = tryStepUp({x:testX.x, y:currentY, z:testX.z}, testX, size, blocks, stepHeight);
+          if (stepped.ok){ testX = stepped.pos; }
+          else {
+            const dir = Math.sign(testX.x - Math.round(testX.x)) || (testX.x>=0?1:-1);
+            while (collidesAt(testX, size, blocks)) testX.x += dir * 0.01;
+          }
+        }
+        pos.x = testX.x; pos.y = testX.y; pos.z = testX.z;
+
+        let testZ = { x: pos.x, y: pos.y, z: pos.z };
+        if (collidesAt(testZ, size, blocks)){
+          const stepped = tryStepUp({x:testZ.x, y:pos.y, z:testZ.z}, testZ, size, blocks, stepHeight);
+          if (stepped.ok){ testZ = stepped.pos; }
+          else {
+            const dir = Math.sign(testZ.z - Math.round(testZ.z)) || (testZ.z>=0?1:-1);
+            while (collidesAt(testZ, size, blocks)) testZ.z += dir * 0.01;
+          }
+        }
+        pos.x = testZ.x; pos.y = testZ.y; pos.z = testZ.z;
+
+        let testY = { x: pos.x, y: next.y, z: pos.z };
+        if (collidesAt(testY, size, blocks)){
+          const dir = Math.sign(testY.y - Math.round(testY.y)) || (testY.y >= currentY ? 1 : -1);
+          let n=0; while (collidesAt(testY, size, blocks) && n++<2000) testY.y += (dir===0? (testY.y>=0?1:-1):dir) * 0.01;
+        }
+        pos.y = testY.y;
+        snapToTop(pos, size, blocks);
         return pos;
       }
 
@@ -185,7 +347,7 @@
 
         useEffect(() => {
           const onKeyDown = (e) => {
-            if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," ","w","a","s","d","b","1","2","3","4","5","6","7","8","9","q","e"].includes(e.key.toLowerCase()) || e.key === " ") {
+            if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," ","w","a","s","d","b","1","2","3","4","5","6","7","8","9","q","e","r"].includes(e.key.toLowerCase()) || e.key === " ") {
               e.preventDefault();
             }
             setKey(e.key, true);
@@ -200,14 +362,16 @@
         }, []);
 
         useFrame((_, dt) => {
-          const speed = 3.6, jumpV = 6.2;
+          const speed = 3.6;
+          const jumpV = 6.2;
+          const gravity = 9.8;
+
           let forward = 0, strafe = 0;
           if (isDown("arrowup") || isDown("w")) forward += 1;
           if (isDown("arrowdown") || isDown("s")) forward -= 1;
           if (isDown("arrowleft") || isDown("a")) strafe -= 1;
           if (isDown("arrowright") || isDown("d")) strafe += 1;
 
-          // drej kamera (3rd person) med venstre/højre piletaster
           if (isDown("arrowleft") && !isDown("a")) currentYaw += 1.5 * dt;
           if (isDown("arrowright") && !isDown("d")) currentYaw -= 1.5 * dt;
 
@@ -217,16 +381,25 @@
           dir.applyAxisAngle(new THREE.Vector3(0,1,0), yaw);
 
           const v = vel.current;
-          v.x = dir.x * speed; v.z = dir.z * speed; v.y += -9.8 * dt;
+          v.x = dir.x * speed; v.z = dir.z * speed; v.y += -gravity * dt;
+          if (!onGround.current) { v.x *= 0.9; v.z *= 0.9; }
 
           if (onGround.current && (isDown(" ") || isDown("space"))) { v.y = jumpV; onGround.current = false; }
 
           const p = positionRef.current;
           const next = { x: p.x + v.x * dt, y: p.y + v.y * dt, z: p.z + v.z * dt };
-          const resolved = aabbVsBlocks(next, {x:0.6,y:1.7,z:0.6}, blocks);
+          const resolved = aabbVsBlocks(next, {x:0.6,y:1.7,z:0.6}, blocks, p.y, 0.6);
 
-          if (resolved.y <= 0.5) { resolved.y = 0.5; v.y = 0; onGround.current = true; }
-          if (Math.abs(resolved.y - p.y) < 1e-3 && v.y < 0) { v.y = 0; onGround.current = true; }
+          const wasFalling = v.y < 0;
+          const landed = wasFalling && (resolved.y >= p.y) && Math.abs(resolved.y - p.y) < 0.05;
+
+          if (landed){ v.y = 0; onGround.current = true; }
+          else {
+            const under = { x: resolved.x, y: resolved.y - 0.01, z: resolved.z };
+            const touching = collidesAt(under, {x:0.6,y:1.7,z:0.6}, blocks);
+            onGround.current = touching;
+            if (touching && v.y < 0) v.y = 0;
+          }
 
           p.x = resolved.x; p.y = resolved.y; p.z = resolved.z;
 
@@ -252,8 +425,43 @@
         return null;
       }
 
+      // ---------- Blocks data helpers (multi-cell bricks) ----------
+      function addBrickAt(base, brick, colorId, rot, blocks, bricks){
+        const id = BRICK_ID++;
+        const w = rot ? brick.l : brick.w;
+        const l = rot ? brick.w : brick.l;
+        const cells = [];
+        for (let dx=0; dx<w; dx++){
+          for (let dz=0; dz<l; dz++){
+            const cx = Math.round(base.x) + dx;
+            const cy = Math.round(base.y);
+            const cz = Math.round(base.z) + dz;
+            const key = toKey(cx,cy,cz);
+            if (blocks.has(key)) return false; // kolliderer – afbryd
+            cells.push({cx,cy,cz,key});
+          }
+        }
+        // alt fri -> skriv
+        const col = COLORS.find(c=>c.id===colorId) || COLORS[0];
+        for (const c of cells){
+          blocks.set(c.key, { pos:[c.cx,c.cy,c.cz], type: colorId, brick:id });
+        }
+        bricks.set(id, cells.map(c=>c.key));
+        return true;
+      }
+      function removeBrickAtCell(cx,cy,cz, blocks, bricks){
+        const key = toKey(cx,cy,cz);
+        const cell = blocks.get(key);
+        if (!cell) return false;
+        const id = cell.brick;
+        const list = bricks.get(id) || [];
+        for (const k of list) blocks.delete(k);
+        bricks.delete(id);
+        return true;
+      }
+
       // ---------- Build / Raycast ----------
-      function RaycastPlacer({ mode, blocks, setBlocks, getSelected }){
+      function RaycastPlacer({ mode, blocks, setBlocks, bricks, setBricks, getColor, getBrick, getRot, sfx }){
         const { camera, gl, scene } = useThree();
         const raycaster = useMemo(()=> new THREE.Raycaster(), []);
         const pointer = useMemo(()=> new THREE.Vector2(), []);
@@ -271,11 +479,10 @@
           pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
           raycaster.setFromCamera(pointer, camera);
 
+          // find alle celler (groups)
           const blockMeshes = [];
           scene.traverse(obj => {
-            if (obj.geometry && obj.type === "Mesh" && obj.parent && obj.parent.type === "Group") {
-              if (obj.parent.children.length >= 1 && obj.parent.position) blockMeshes.push(obj.parent);
-            }
+            if (obj.type === "Group" && obj.children?.length) blockMeshes.push(obj);
           });
 
           const intersectsBlocks = raycaster.intersectObjects(blockMeshes, true);
@@ -284,29 +491,47 @@
             if (intersectsBlocks.length > 0) {
               const parent = intersectsBlocks[0].object.parent;
               const pos = parent.position;
-              const key = toKey(Math.round(pos.x), Math.round(pos.y), Math.round(pos.z));
-              setBlocks(prev => { const m = new Map(prev); m.delete(key); return m; });
+              const cx = Math.round(pos.x), cy = Math.round(pos.y), cz = Math.round(pos.z);
+              setBlocks(prev => {
+                const nb = new Map(prev);
+                const ok = removeBrickAtCell(cx,cy,cz, nb, bricks);
+                if (ok && sfx) sfx("remove");
+                return nb;
+              });
               return;
             }
           } else {
+            // venstreklik: placér
+            const colorId = getColor();
+            const brick = BRICK_MAP.get(getBrick());
+            const rot = getRot();
             if (intersectsBlocks.length > 0) {
               const hit = intersectsBlocks[0];
               const normal = hit.face?.normal?.clone() ?? new THREE.Vector3(0,1,0);
               const worldNormal = normal.applyMatrix3(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld)).normalize();
               const place = hit.point.clone().add(worldNormal.multiplyScalar(0.5)).floor().addScalar(0.5);
-              const key = toKey(Math.round(place.x), Math.round(place.y), Math.round(place.z));
-              setBlocks(prev => { const m = new Map(prev); if (!m.has(key)) m.set(key, { pos: [Math.round(place.x),Math.round(place.y),Math.round(place.z)], type: getSelected() }); return m; });
+              const base = { x: Math.round(place.x), y: Math.round(place.y), z: Math.round(place.z) };
+              setBlocks(prev => {
+                const nb = new Map(prev);
+                const ok = addBrickAt(base, brick, colorId, rot, nb, bricks);
+                if (ok && sfx) sfx("place");
+                return nb;
+              });
               return;
             }
-          }
-
-          const ground = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
-          const intersection = new THREE.Vector3();
-          raycaster.ray.intersectPlane(ground, intersection);
-          if (intersection) {
-            const place = intersection.clone().add(new THREE.Vector3(0,0.5,0)).floor().addScalar(0.5);
-            const key = toKey(Math.round(place.x), Math.round(place.y), Math.round(place.z));
-            setBlocks(prev => { const m = new Map(prev); if (!m.has(key)) m.set(key, { pos: [Math.round(place.x), Math.round(place.y), Math.round(place.z)], type: getSelected() }); return m; });
+            // ground
+            const ground = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+            const intersection = new THREE.Vector3();
+            raycaster.ray.intersectPlane(ground, intersection);
+            if (intersection) {
+              const base = { x: Math.round(intersection.x), y: 0, z: Math.round(intersection.z) };
+              setBlocks(prev => {
+                const nb = new Map(prev);
+                const ok = addBrickAt(base, brick, colorId, rot, nb, bricks);
+                if (ok && sfx) sfx("place");
+                return nb;
+              });
+            }
           }
         };
 
@@ -314,13 +539,13 @@
           const el = gl.domElement;
           el.addEventListener("mousedown", handlePointerDown);
           return () => el.removeEventListener("mousedown", handlePointerDown);
-        }, [gl, camera, scene, mode]);
+        }, [gl, camera, scene, mode, getColor, getBrick, getRot, sfx]);
 
         return null;
       }
 
       // ---------- Batarang System ----------
-      function BatarangSystem({ blocks, setBlocks }){
+      function BatarangSystem({ blocks, setBlocks, bricks, sfx }){
         const { camera } = useThree();
         const [bats, setBats] = useState([]);
 
@@ -331,11 +556,12 @@
               const pos = camera.position.clone().add(dir.clone().multiplyScalar(0.6)).add(new THREE.Vector3(0,-0.1,0));
               const speed = 12;
               setBats(prev => [...prev, { id: Math.random(), pos, vel: dir.multiplyScalar(speed), ttl: 2.0 }]);
+              sfx && sfx("throw");
             }
           };
           window.addEventListener("keydown", onKey);
           return () => window.removeEventListener("keydown", onKey);
-        }, [camera]);
+        }, [camera, sfx]);
 
         useFrame((_, dt) => {
           if (bats.length === 0) return;
@@ -348,7 +574,12 @@
               let hit = false;
               if (blocks.has(key)){
                 hit = true;
-                setBlocks((p)=>{ const m = new Map(p); m.delete(key); return m; });
+                setBlocks((p)=>{ const m = new Map(p);
+                  // fjern hele stenen
+                  const cell = m.get(key);
+                  if (cell && cell.brick){ const list = bricks.get(cell.brick) || []; for (const k of list) m.delete(k); bricks.delete(cell.brick); }
+                  return m;
+                });
               }
               const nt = b.ttl - dt;
               if (!hit && nt > 0){ next.push({ ...b, pos: np, ttl: nt }); }
@@ -366,106 +597,135 @@
       }
 
       // ---------- UI ----------
-      function Hotbar({ hotbar, selected, setSelected }){
-        useEffect(() => {
-          const onKey = (e) => { const n = parseInt(e.key, 10); if (!isNaN(n) && n >= 1 && n <= 9) setSelected(n-1); };
-          window.addEventListener("keydown", onKey);
-          return () => window.removeEventListener("keydown", onKey);
-        }, [setSelected]);
+      function ColorHotbar({ colors, selected, onSelect }){
         return React.createElement('div',{className:'hud'},
-          hotbar.map((id, i) => {
-            const bt = BLOCK_TYPES.find(b=>b.id===id);
-            const active = i===selected;
-            return React.createElement('button',{
-              key:i, title:`${bt.label} (${i+1})`,
-              onClick:()=>setSelected(i),
-              style:{ width:48, height:48, borderRadius:12, border: active ? "2px solid white" : "1px solid rgba(255,255,255,.3)",
-                transform: active ? "scale(1.05)" : "scale(1.0)", background: bt.color, opacity: bt.opacity ?? 1, transition: "transform .15s"}
-            });
-          })
+          colors.map((c, i) => React.createElement('div',{
+            key:c.id, className:`dot ${i===selected?'active':''}`,
+            onClick:()=>onSelect(i),
+            title:c.label,
+            style:{ background: c.color, opacity: c.opacity ?? 1 }
+          }))
         );
       }
 
-      function Sidebar({ open, setOpen }){
-        useEffect(() => { const onKey = (e) => { if (e.key.toLowerCase() === "b") setOpen(v => !v); }; window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey); }, [setOpen]);
+      function Sidebar({ open, setOpen, bricks, selectedBrick, onSelectBrick }){
         return open ? React.createElement('div',{className:'sidebar'},
-          React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}},
+          React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
             React.createElement('h2',{style:{fontSize:16,fontWeight:600}},'Klodser'),
             React.createElement('button',{className:'button',onClick:()=>setOpen(false)},'Luk (B)')
           ),
-          React.createElement('div',{className:'palette'},
-            BLOCK_TYPES.map(bt => React.createElement('div',{key:bt.id,className:'palette-item'},
-              React.createElement('div',{style:{width:24,height:24,borderRadius:6,background:bt.color,opacity:bt.opacity ?? 1}}),
-              React.createElement('div',{style:{fontSize:13}},bt.label)
+          React.createElement('div',{className:'bricklist'},
+            bricks.map(b => React.createElement('div',{
+              key:b.id, className:`brick-item ${selectedBrick===b.id?'active':''}`, onClick:()=>onSelectBrick(b.id)
+            },
+              React.createElement('div',null, b.id),
+              React.createElement('div',{className:'pill'}, `${b.w}×${b.l} studs`)
             ))
           ),
           React.createElement('hr',{style:{borderColor:"rgba(255,255,255,.1)", margin:"16px 0"}}),
-          React.createElement('p',{style:{fontSize:12,opacity:.7}},'Tip: 1–9 vælger blok • Højreklik fjerner • Venstreklik placerer • Q: Byg/Gadget • E: Batarang')
+          React.createElement('p',{style:{fontSize:12,opacity:.7}},'Tip: R roterer aflange klodser • Højreklik fjerner en hel klods • Venstreklik placerer')
         ) : null;
       }
 
       // ---------- App ----------
       function App(){
+        // verdens-tilstand
         const [blocks, setBlocks] = useState(() => {
           const m = new Map();
-          for (let x=-6; x<=6; x++) for (let z=-6; z<=6; z++) m.set(`${x}|0|${z}`, { pos:[x,0,z], type: (x+z)%2===0?"darkgray":"lightgray" });
-        for (let y=1; y<4; y++) m.set(`2|${y}|2`, { pos:[2,y,2], type: "yellow" });
+          for (let x=-6; x<=6; x++) for (let z=-6; z<=6; z++) m.set(`${x}|0|${z}`, { pos:[x,0,z], type: (x+z)%2===0?"darkgray":"lightgray", brick: 0 });
           return m;
         });
-        const [hotbar] = useState([...DEFAULT_HOTBAR]);
-        const [selected, setSelected] = useState(0);
+        const bricks = useMemo(()=> new Map(), []); // brickId -> array of keys
+
+        // valg-tilstande
         const [sidebarOpen, setSidebarOpen] = useState(true);
+        const [colorIndex, setColorIndex] = useState(DEFAULT_COLOR_INDEX);
+        const [selectedBrick, setSelectedBrick] = useState("2x2");
+        const [brickRot, setBrickRot] = useState(0); // 0=normal, 1=roteret
         const [mode, setMode] = useState("build");
 
-        // læg hotbar/selected i DOM dataset, så RaycastPlacer kan læse det uden prop-drill
-        useEffect(() => {
-          const root = document.getElementById('root');
-          root.dataset.hotbar = hotbar.join(",");
-        }, [hotbar]);
-        useEffect(() => {
-          const root = document.getElementById('root');
-          root.dataset.selected = String(selected);
-        }, [selected]);
+        // dag/nat & lyd
+        const [theme, setTheme] = useState("night"); // "day" | "night"
+        const [bgOn, setBgOn] = useState(false);
+        const [sfxOn, setSfxOn] = useState(true);
+        const audio = useAudio();
 
-        const playerPos = useRef(vec3(0,0.5,6));
-
-        const [showHelp, setShowHelp] = useState(true);
-        useEffect(() => { const t = setTimeout(()=>setShowHelp(false), 6000); return () => clearTimeout(t); }, []);
         useEffect(() => {
-          const onKey = (e) => { const k = e.key.toLowerCase(); if (k === "q") setMode(m => m === "build" ? "gadget" : "build"); };
+          const onKey = (e) => {
+            const k = e.key.toLowerCase();
+            if (k === "b") setSidebarOpen(v => !v);
+            if (k === "q") setMode(m => m === "build" ? "gadget" : "build");
+            if (k === "r") setBrickRot(r => 1 - r);
+            const n = parseInt(k, 10);
+            if (!isNaN(n) && n >= 1 && n <= COLORS.length) setColorIndex(n-1);
+          };
           window.addEventListener("keydown", onKey);
           return () => window.removeEventListener("keydown", onKey);
         }, []);
 
-        const getSelected = () => hotbar[selected] ?? "black";
+        // lyd toggles
+        useEffect(()=>{ audio.setBGEnabled(bgOn); }, [bgOn]);
+        useEffect(()=>{ audio.setSFXEnabled(sfxOn); }, [sfxOn]);
+
+        const playerPos = useRef(vec3(0,0.5,6));
+
+        const getColor = () => COLORS[colorIndex]?.id ?? "yellow";
+        const getBrick = () => selectedBrick;
+        const getRot = () => brickRot === 1;
+
+        const [showHelp, setShowHelp] = useState(true);
+        useEffect(() => { const t = setTimeout(()=>setShowHelp(false), 6000); return () => clearTimeout(t); }, []);
 
         return React.createElement('div',{style:{width:"100%",height:"100%",position:"relative",background:"#000"}},
           React.createElement(Canvas, { shadows:true, camera:{ position:[0,2,8], fov:60 } },
-            React.createElement(GradientSky,null),
-            React.createElement(StarsSimple,{count:800}),
-            React.createElement('ambientLight',{intensity:0.6}),
-            React.createElement('directionalLight',{position:[5,10,5], intensity:1.1, castShadow:true}),
-            React.createElement(Ground,null),
+            React.createElement(GradientSky,{mode:theme}),
+            React.createElement(StarsSimple,{count:800, visible: theme==="night"}),
+            React.createElement('ambientLight',{intensity: theme==="day" ? 0.9 : 0.5}),
+            React.createElement('directionalLight',{position:[5,10,5], intensity: theme==="day" ? 1.2 : 0.8, castShadow:true, color: theme==="day" ? "#ffffff" : "#a0b8ff"}),
+            React.createElement(Ground,{groundColor: theme==="day" ? "#3a3a3d" : "#2a2a2d"}),
             React.createElement(Blocks,{blocks}),
             React.createElement(PlayerController,{positionRef:playerPos, blocks}),
             React.createElement(CameraRig,{playerPosRef:playerPos}),
-            React.createElement(RaycastPlacer,{mode, blocks, setBlocks, getSelected}),
-            React.createElement(BatarangSystem,{blocks, setBlocks})
+            React.createElement(RaycastPlacer,{
+              mode, blocks, setBlocks, bricks, setBricks:()=>{}, // bricks er mutabel Map
+              getColor, getBrick, getRot,
+              sfx: sfxOn ? audio.playSFX : null
+            }),
+            React.createElement(BatarangSystem,{blocks, setBlocks, bricks, sfx: sfxOn ? audio.playSFX : null})
           ),
+
+          // UI
           React.createElement('div',{className:'crosshair'}),
-          React.createElement('div',{className:'topbar'},
+          React.createElement('div',{className:'topbar-left'},
             React.createElement('button',{className:'button', onClick:()=>setSidebarOpen(v=>!v)}, sidebarOpen?"Skjul":"Klodser (B)"),
             React.createElement('button',{className:'button', onClick:()=>setMode(m=>m==="build"?"gadget":"build")}, `Tilstand: ${mode==="build"?"Byg":"Gadget"} (Q)`),
-            React.createElement('button',{className:'button', onClick:()=>setSelected(s=> (s+1)%9)}, 'Næste blok (↦)')
+            React.createElement('button',{className:'button', onClick:()=>setBrickRot(r=>1-r)}, `Rotation (R): ${brickRot? "90°":"0°"}`)
+          ),
+          React.createElement('div',{className:'topbar-right'},
+            React.createElement('button',{className:`toggle ${theme==="day"?"active":""}`, onClick:()=>setTheme(t=>t==="day"?"night":"day")}, theme==="day"?"☀️ Dag":"🌙 Nat"),
+            React.createElement('button',{className:`toggle ${bgOn?"active":""}`, onClick:()=>setBgOn(v=>!v)}, bgOn?"🎵 Musik: Til":"🎵 Musik: Fra"),
+            React.createElement('button',{className:`toggle ${sfxOn?"active":""}`, onClick:()=>setSfxOn(v=>!v)}, sfxOn?"🔊 SFX: Til":"🔇 SFX: Fra"),
+            React.createElement('div',{className:'title', style:{marginLeft:8}},
+              React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Stable v2'),
+              React.createElement('div',{style:{color:"#fff", fontSize:16, fontWeight:600}},'LEGO Batman – Voxel Builder')
+            )
           ),
           showHelp && React.createElement('div',{className:'hint'},
-            'WASD/Pile: Bevæg • Space: Hop • B: Sidebar • 1–9: Vælg blok • Q: Byg/Gadget • E: Batarang'
+            'WASD/Pile: Bevæg • Space: Hop • B: Sidebar • 1–9: Vælg farve • R: Roter klods • Q: Byg/Gadget • E: Batarang'
           ),
-          React.createElement(Sidebar,{open:sidebarOpen, setOpen:setSidebarOpen}),
-          React.createElement('div',{className:'title'},
-            React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Stable no-drei build'),
-            React.createElement('div',{style:{color:"#fff", fontSize:18, fontWeight:600}},'LEGO Batman – Voxel Builder')
-          )
+
+          React.createElement(Sidebar,{
+            open:sidebarOpen,
+            setOpen:setSidebarOpen,
+            bricks:BRICKS,
+            selectedBrick,
+            onSelectBrick:setSelectedBrick
+          }),
+          React.createElement(ColorHotbar,{
+            colors:COLORS,
+            selected:colorIndex,
+            onSelect:setColorIndex
+          })
         );
       }
 
