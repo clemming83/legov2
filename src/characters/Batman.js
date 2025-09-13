@@ -1,6 +1,6 @@
 // /src/characters/Batman.js
-// Batman-figur: loader OBJ+MTL og tvinger ansigts- og torso-teksturer.
-// Indeholder også en simpel fallback-minifig, som game.js kan bruge hvis OBJ ikke kan loades.
+// Batman-figur: loader OBJ+MTL, vender 180°, aligner fødder til collider,
+// og tvinger ansigt- og torso-teksturer. Fallback-minifig har ben-animation.
 
 import React, { useEffect, useRef } from "https://esm.sh/react@18.3.1";
 import * as THREE from "https://esm.sh/three@0.160.0";
@@ -37,37 +37,29 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
             (obj) => {
               if (!mounted) return;
               try {
-                // Tving StandardMaterial + heuristisk mapping af face/torso teksturer
+                // Standardize materialer + påfør face/torso-teksturer
                 obj.traverse((c) => {
                   if (!c.isMesh) return;
                   c.castShadow = true; c.receiveShadow = true;
 
                   const baseMat = new THREE.MeshStandardMaterial({
                     color: (c.material?.color) ? c.material.color.clone() : new THREE.Color("#333"),
-                    roughness: 0.55,
-                    metalness: 0.05,
-                    transparent: false,
-                    opacity: 1.0,
-                    side: THREE.DoubleSide
+                    roughness: 0.55, metalness: 0.05, transparent: false, opacity: 1.0, side: THREE.DoubleSide
                   });
 
-                  // Prøv at bruge materialenavn fra MTL til mere præcis mapping
                   const mName = (c.material && c.material.name) ? c.material.name.toLowerCase() : "";
-                  const name = (c.name || "").toLowerCase();
+                  const name  = (c.name || "").toLowerCase();
 
-                  // Heuristik: material/navn indeholder "head"/"face" → brug ansigtstekstur
-                  const taggedHead = /head|face/.test(mName) || /head|face/.test(name);
-                  // Heuristik: material/navn indeholder "torso|body|chest" → brug torso-tekstur
+                  const taggedHead  = /head|face/.test(mName)  || /head|face/.test(name);
                   const taggedTorso = /torso|body|chest/.test(mName) || /torso|body|chest/.test(name);
 
-                  // Fald tilbage til bbox-heuristik hvis navnene ikke afslører noget
                   if (!taggedHead && !taggedTorso) {
+                    // bbox-heuristik fallback
                     c.geometry.computeBoundingBox?.();
                     const bb = c.geometry.boundingBox;
                     if (bb) {
-                      const size = new THREE.Vector3();
-                      bb.getSize(size);
-                      const sx = size.x, sy = size.y, sz = size.z;
+                      const size = new THREE.Vector3(); bb.getSize(size);
+                      const sx=size.x, sy=size.y, sz=size.z;
                       const looksLikeHead =
                         sy > 0.28 && sy < 0.48 &&
                         Math.abs(sx - sy) < 0.2 && Math.abs(sz - sy) < 0.2;
@@ -76,11 +68,8 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
                         sx > 0.45 && sx < 0.75 &&
                         sz > 0.22 && sz < 0.48;
 
-                      if (looksLikeHead && tFace) {
-                        baseMat.map = tFace;
-                      } else if (looksLikeTorso && tTorso) {
-                        baseMat.map = tTorso;
-                      }
+                      if (looksLikeHead && tFace)  baseMat.map = tFace;
+                      else if (looksLikeTorso && tTorso) baseMat.map = tTorso;
                     }
                   } else {
                     if (taggedHead && tFace)  baseMat.map = tFace;
@@ -94,23 +83,31 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
                   c.material = baseMat;
                 });
 
-                // Skaler til ~1.7 høj
+                // Skaler til ~1.7 m høj
                 const box = new THREE.Box3().setFromObject(obj);
-                const size = new THREE.Vector3();
-                box.getSize(size);
+                const size = new THREE.Vector3(); box.getSize(size);
                 const scale = (size.y > 0.0001) ? (1.7 / size.y) : 1.0;
                 obj.scale.setScalar(scale);
 
-                // Recenter (center.y -> 0.85)
-                const box2 = new THREE.Box3().setFromObject(obj);
-                const center = new THREE.Vector3();
-                box2.getCenter(center);
-                obj.position.y += (0.85 - center.y);
+                // *** FOD-ALIGN ***:
+                // Efter skalering måler vi ny boundingbox og flytter modellen så
+                // føddernes laveste punkt (minY) havner ved -colliderHalf (=-0.85)
+                // ift. forældre-gruppen (som står i spillerens center).
+                const box2   = new THREE.Box3().setFromObject(obj);
+                const min    = new THREE.Vector3(); box2.getMin(min);
+                const colliderHalf = 0.85; // (samme som i game.js: spillerhøjde 1.7 / 2)
+                const deltaY = (-colliderHalf - min.y);
+                obj.position.y += deltaY;
 
-                // Vend 180° så Batman kigger væk fra kameraet (mod -Z fremad i vores setup)
+                // Vend 180°, så han kigger væk fra kameraet (–Z fremad i setup)
                 obj.rotation.y = Math.PI;
 
-                group.current?.add(obj);
+                // Parent OBJ under hofte (hipRef) → hofte-bob fra spillet animerer kroppen
+                if (hipRef?.current) {
+                  hipRef.current.add(obj);
+                } else {
+                  group.current?.add(obj);
+                }
               } catch (e) {
                 console.error("Batman OBJ post-process error", e);
                 showErr("Batman model post-process fejlede", e.stack);
@@ -119,7 +116,7 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
             undefined,
             (e) => {
               console.warn("OBJ load failed", e);
-              // Ikke fatal – fallback-figur håndteres i game.js
+              // Ikke fatal – game.js viser fallback-minifig hvis OBJ fejler.
             }
           );
         } catch (e) {
@@ -130,7 +127,7 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
       undefined,
       (e) => {
         console.warn("MTL load failed", e);
-        // Ikke fatal – fallback-figur håndteres i game.js
+        // Ikke fatal – fallback håndteres i game.js
       });
     } catch (e) {
       console.error("Batman loader fatal", e);
@@ -140,7 +137,8 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
     return () => { mounted = false; };
   }, []);
 
-  // Noder som game.js bruger til ben/hofte animation
+  // Noder som game.js bruger til hofte/ben (ben-noder roteres i fallback;
+  // for OBJ giver hofte-noden stadig bob/gå-fornemmelse)
   return React.createElement('group',{ref:group, position:[0,0,0]},
     React.createElement('group',{ref:hipRef, position:[0,0,0]}),
     React.createElement('group',{ref:legLRef, position:[-0.14, 0.48, 0]}),
@@ -149,6 +147,7 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
 }
 
 export function BatmanMiniFallback({ hipRef, legLRef, legRRef }){
+  // Fallback-minifig med ben, som game.js animerer (swing + hofte-bob)
   const body = "#151515", cowl = "#0d0d0d", belt = "#f1c40f", gray = "#444";
   return React.createElement('group',null,
     React.createElement('group',{ref:hipRef, position:[0,0,0]},
