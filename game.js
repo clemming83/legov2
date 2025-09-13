@@ -1,6 +1,5 @@
-// LEGO Batman – Voxel Builder (Safe Mode v7)
-// Første load: minimal scene (ingen lyd, ingen villains, ingen batarang)
-// Ekstra features kan tændes i UI (⚙️ Ekstra: Til/Fra)
+// LEGO Batman – Voxel Builder (Safe Mode v8)
+// Rettelser: ingen dobbelt-Batman, forbedret physics (step/snap), vertikal byg, hurtig/sikker raycast.
 
 import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
 import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
@@ -77,7 +76,7 @@ function Ground({ size = 400, groundColor="#2a2a2d" }) {
 }
 function BlockCell({ position, color, transparent=false, opacity=1 }){
   return React.createElement('group',{position},
-    React.createElement('mesh',{castShadow:true,receiveShadow:true},
+    React.createElement('mesh',{castShadow:true,receiveShadow:true, userData:{isBlock:true}},
       React.createElement('boxGeometry',{args:[1,1,1]}),
       React.createElement('meshStandardMaterial',{color,transparent,opacity})
     ),
@@ -91,7 +90,7 @@ function BlockCell({ position, color, transparent=false, opacity=1 }){
 }
 function Blocks({ blocks }){
   const items = [...blocks.values()];
-  return React.createElement('group',null,
+  return React.createElement('group',{name:"WorldBlocks"},
     items.map(({pos, type}) => {
       const c = COLORS.find(k=>k.id===type) || COLORS[0];
       return React.createElement(BlockCell, {
@@ -124,9 +123,9 @@ function tryStepUp(basePos, tryPos, size, blocks, maxStep=0.6){
   const stepped = { x: tryPos.x, y: basePos.y, z: tryPos.z };
   for (let h=inc; h<=maxStep+1e-6; h+=inc){
     stepped.y = basePos.y + h;
-    if (!collidesAt(stepped, size, blocks)) return { ok:true, pos: { ...stepped } };
+    if (!collidesAt(stepped, size, blocks)) return { ok:true, pos: { ...stepped }, stepHeight:h };
   }
-  return { ok:false, pos: tryPos };
+  return { ok:false, pos: tryPos, stepHeight:0 };
 }
 function snapToTop(pos, size, blocks){
   const belowY = Math.floor(pos.y - size.y/2 - 0.001);
@@ -141,41 +140,57 @@ function snapToTop(pos, size, blocks){
     }
   }
 }
-function aabbVsBlocks(next, size, blocks, currentY, stepHeight=0.6){
+function aabbVsBlocks(next, size, blocks, current, stepHeight=0.6){
   const pos = { x: next.x, y: next.y, z: next.z };
 
-  let testX = { x: pos.x, y: currentY, z: pos.z };
+  // X
+  let testX = { x: pos.x, y: current.y, z: pos.z };
+  let steppedUp = false;
   if (collidesAt(testX, size, blocks)){
-    const stepped = tryStepUp({x:testX.x, y:currentY, z:testX.z}, testX, size, blocks, stepHeight);
-    if (stepped.ok){ testX = stepped.pos; }
-    else { const dir = Math.sign(testX.x - Math.round(testX.x)) || (testX.x>=0?1:-1); let n=0; while (collidesAt(testX, size, blocks) && n++<200) testX.x += dir * 0.01; }
+    const stepped = tryStepUp(current, testX, size, blocks, stepHeight);
+    if (stepped.ok){ testX = stepped.pos; steppedUp = true; }
+    else {
+      const dir = Math.sign(testX.x - Math.round(testX.x)) || (testX.x>=0?1:-1);
+      let n=0; while (collidesAt(testX, size, blocks) && n++<200) testX.x += dir * 0.01;
+    }
   }
   pos.x = testX.x; pos.y = testX.y; pos.z = testX.z;
 
+  // Z
   let testZ = { x: pos.x, y: pos.y, z: pos.z };
   if (collidesAt(testZ, size, blocks)){
-    const stepped = tryStepUp({x:testZ.x, y:pos.y, z:testZ.z}, testZ, size, blocks, stepHeight);
-    if (stepped.ok){ testZ = stepped.pos; }
-    else { const dir = Math.sign(testZ.z - Math.round(testZ.z)) || (testZ.z>=0?1:-1); let n=0; while (collidesAt(testZ, size, blocks) && n++<200) testZ.z += dir * 0.01; }
+    const stepped = tryStepUp({x:testZ.x,y:pos.y,z:testZ.z}, testZ, size, blocks, stepHeight);
+    if (stepped.ok){ testZ = stepped.pos; steppedUp = true; }
+    else {
+      const dir = Math.sign(testZ.z - Math.round(testZ.z)) || (testZ.z>=0?1:-1);
+      let n=0; while (collidesAt(testZ, size, blocks) && n++<200) testZ.z += dir * 0.01;
+    }
   }
   pos.x = testZ.x; pos.y = testZ.y; pos.z = testZ.z;
 
+  // Y
   let testY = { x: pos.x, y: next.y, z: pos.z };
   if (collidesAt(testY, size, blocks)){
-    const dir = Math.sign(testY.y - Math.round(testY.y)) || (testY.y >= currentY ? 1 : -1);
+    const dir = Math.sign(testY.y - Math.round(testY.y)) || (testY.y >= current.y ? 1 : -1);
     let n=0; while (collidesAt(testY, size, blocks) && n++<2000) testY.y += (dir===0? (testY.y>=0?1:-1):dir) * 0.01;
   }
   pos.y = testY.y;
 
+  // Snap lodret og centrer X/Z hvis vi lige er steppet op på en top → mindre “skub ud”
   snapToTop(pos, size, blocks);
   if (pos.y < size.y/2) pos.y = size.y/2;
+  if (steppedUp || pos.y > current.y + 0.19) {
+    // center til nærmeste stud-center
+    pos.x = Math.round(pos.x);
+    pos.z = Math.round(pos.z);
+  }
   return pos;
 }
 
 /* ------------------------------- Player -------------------------------- */
-function BatmanMinifig({ position }){
+function BatmanMinifig(){ // Kun én Batman (ingen prop-position; placeres af PlayerController)
   const body = "#151515", cowl = "#0d0d0d", belt = "#f1c40f", gray = "#444";
-  return React.createElement('group',{position},
+  return React.createElement('group',null,
     React.createElement('mesh',{position:[ -0.15, 0.25, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}), React.createElement('meshStandardMaterial',{color:gray})),
     React.createElement('mesh',{position:[ 0.15, 0.25, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}), React.createElement('meshStandardMaterial',{color:gray})),
     React.createElement('mesh',{position:[0, 0.85, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.6,0.7,0.35]}), React.createElement('meshStandardMaterial',{color:body})),
@@ -198,10 +213,7 @@ function PlayerController({ positionRef, blocks }){
     const onKeyUp = (e) => setKey(e.key, false);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-    };
+    return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
   }, []);
 
   useFrame((_, _dt) => {
@@ -230,10 +242,10 @@ function PlayerController({ positionRef, blocks }){
 
     const p = positionRef.current;
     const next = { x: p.x + v.x * dt, y: p.y + v.y * dt, z: p.z + v.z * dt };
-    const resolved = aabbVsBlocks(next, {x:0.6,y:1.7,z:0.6}, blocks, p.y, 0.6);
+    const resolved = aabbVsBlocks(next, {x:0.6,y:1.7,z:0.6}, blocks, p, 0.7);
 
     const wasFalling = v.y < 0;
-    const landed = wasFalling && (resolved.y >= p.y) && Math.abs(resolved.y - p.y) < 0.05;
+    const landed = wasFalling && (resolved.y >= p.y) && Math.abs(resolved.y - p.y) < 0.06;
 
     if (landed){ v.y = 0; onGround.current = true; }
     else {
@@ -243,14 +255,20 @@ function PlayerController({ positionRef, blocks }){
       if (touching && v.y < 0) v.y = 0;
     }
 
+    // Lidt friktion når vi står på top → mindre kant-skub
+    if (onGround.current){ v.x *= 0.85; v.z *= 0.85; }
+
     p.x = resolved.x; p.y = resolved.y; p.z = resolved.z;
     if (p.y < 0.5) { p.y = 0.5; v.y = 0; onGround.current = true; }
 
-    if (ref.current) { ref.current.position.set(p.x, p.y, p.z); ref.current.rotation.y = yaw; }
+    if (ref.current) {
+      ref.current.position.set(p.x, p.y, p.z);
+      ref.current.rotation.y = yaw;
+    }
   });
 
   return React.createElement('group',{ref},
-    React.createElement(BatmanMinifig,{position:[0,0,0]})
+    React.createElement('group',{position:[0,0,0]}, React.createElement(BatmanMinifig,null))
   );
 }
 function CameraRig({ playerPosRef }){
@@ -297,47 +315,82 @@ function removeBrickAtCell(cx,cy,cz, blocks, bricks){
   bricks.delete(id);
   return true;
 }
-function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, getRot }){
-  const { camera, gl } = useThree();
+
+/* -------- Raycast placer (med face normal → kan bygge ovenpå/sider) ----- */
+function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, getRot, worldRef }){
+  const { camera } = useThree();
   const raycaster = useMemo(()=> new THREE.Raycaster(), []);
   const pointer = useMemo(()=> new THREE.Vector2(), []);
   useEffect(() => {
     const onContext = (e) => e.preventDefault();
-    gl.domElement.addEventListener("contextmenu", onContext);
-    return () => gl.domElement.removeEventListener("contextmenu", onContext);
-  }, [gl]);
+    const el = worldRef.current?.parent?.parent?.__r3f?.root?.gl?.domElement || document.querySelector("canvas");
+    el?.addEventListener("contextmenu", onContext);
+    return () => el?.removeEventListener("contextmenu", onContext);
+  }, [worldRef]);
+
+  const cast = (clientX, clientY) => {
+    const canvas = document.querySelector("canvas");
+    const rect = canvas.getBoundingClientRect();
+    pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const root = worldRef.current;
+    const hits = root ? raycaster.intersectObject(root, true) : [];
+    return hits;
+  };
 
   const handlePointerDown = (e) => {
     if (mode !== "build") return;
-    const rect = gl.domElement.getBoundingClientRect();
-    pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-    pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-    raycaster.setFromCamera(pointer, camera);
-
-    // Raycast mod en vandret plane (y=0) altid, og kun mod eksisterende blokke via positions-snap
-    // 1) tjek "blok" hit ved at sample nærmeste integer position fra ray
-    const ground = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
-    const intersection = new THREE.Vector3();
-    raycaster.ray.intersectPlane(ground, intersection);
-
-    // venstreklik = placér, højreklik = fjern (hvis der er en blok)
+    const hits = cast(e.clientX, e.clientY);
     const colorId = getColor();
     const brick = BRICK_MAP.get(getBrick());
     const rot = getRot();
 
-    if (e.button === 2) {
-      if (!intersection) return;
-      const cx = Math.round(intersection.x), cy = 0, cz = Math.round(intersection.z);
+    if (e.button === 2) { // fjern
+      if (hits.length > 0) {
+        // gå op til nærmeste gruppe med position = cell
+        let obj = hits[0].object;
+        while (obj && !obj.parent?.position) obj = obj.parent;
+        if (!obj) return;
+        const pos = obj.parent?.position || obj.position;
+        const cx = Math.round(pos.x), cy = Math.round(pos.y), cz = Math.round(pos.z);
+        setBlocks(prev => {
+          const nb = new Map(prev);
+          removeBrickAtCell(cx,cy,cz, nb, bricks);
+          return nb;
+        });
+      }
+      return;
+    }
+
+    if (hits.length > 0) {
+      const hit = hits[0];
+      const faceN = hit.face?.normal?.clone() ?? new THREE.Vector3(0,1,0);
+      const nrm = faceN.applyMatrix3(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld)).normalize();
+
+      // placér på cellen ved at flytte 0.5 i normal-retning og snappe til grid
+      const place = hit.point.clone().add(nrm.multiplyScalar(0.5)).floor().addScalar(0.5);
+      const base = { x: Math.round(place.x), y: Math.round(place.y), z: Math.round(place.z) };
+
       setBlocks(prev => {
         const nb = new Map(prev);
-        removeBrickAtCell(cx,cy,cz, nb, bricks);
+        addBrickAt(base, brick, colorId, rot, nb, bricks);
         return nb;
       });
       return;
     }
 
-    if (intersection) {
-      const base = { x: Math.round(intersection.x), y: 0, z: Math.round(intersection.z) };
+    // fallback: ramte kun jorden (y=0 plane)
+    const canvas = document.querySelector("canvas");
+    const rect = canvas.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera({x,y}, camera);
+    const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+    const p = new THREE.Vector3();
+    raycaster.ray.intersectPlane(plane, p);
+    if (p) {
+      const base = { x: Math.round(p.x), y: 0, z: Math.round(p.z) };
       setBlocks(prev => {
         const nb = new Map(prev);
         addBrickAt(base, brick, colorId, rot, nb, bricks);
@@ -347,10 +400,10 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
   };
 
   useEffect(() => {
-    const el = gl.domElement;
-    el.addEventListener("mousedown", handlePointerDown);
-    return () => el.removeEventListener("mousedown", handlePointerDown);
-  }, [gl, camera, mode, getColor, getBrick, getRot]);
+    const canvas = document.querySelector("canvas");
+    canvas?.addEventListener("mousedown", handlePointerDown);
+    return () => canvas?.removeEventListener("mousedown", handlePointerDown);
+  }, [mode, worldRef, getColor, getBrick, getRot]);
 
   return null;
 }
@@ -433,8 +486,8 @@ function App(){
   const [mode, setMode] = useState("build");
   const [theme, setTheme] = useState("night");
 
-  // “Ekstra” er FRA ved første load (for at undgå freeze)
-  const [extrasOn, setExtrasOn] = useState(false);
+  const worldRef = useRef(); // alle blokke i én gruppe
+  const playerPos = useRef(vec3(0,0.5,6));
 
   useEffect(() => {
     const onKey = (e) => {
@@ -449,8 +502,6 @@ function App(){
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const playerPos = useRef(vec3(0,0.5,6));
-
   const getColor = () => COLORS[colorIndex]?.id ?? "yellow";
   const getBrick = () => selectedBrick;
   const getRot = () => brickRot === 1;
@@ -463,21 +514,21 @@ function App(){
       shadows:true,
       camera:{ position:[0,2,8], fov:60 },
       dpr:[1, 1.5],
-      gl:{
-        antialias:false, powerPreference:"high-performance",
-        alpha:false, stencil:false, depth:true, preserveDrawingBuffer:false
-      }
+      gl:{ antialias:false, powerPreference:"high-performance", alpha:false, stencil:false, depth:true, preserveDrawingBuffer:false }
     },
       React.createElement(GradientSky,{mode:theme}),
-      React.createElement(StarsSimple,{count: extrasOn ? 500 : 200, visible: theme==="night"}),
+      React.createElement(StarsSimple,{count: 300, visible: theme==="night"}),
       React.createElement('ambientLight',{intensity: theme==="day" ? 0.9 : 0.5}),
       React.createElement('directionalLight',{position:[5,10,5], intensity: theme==="day" ? 1.2 : 0.8, castShadow:true, color: theme==="day" ? "#ffffff" : "#a0b8ff"}),
-      React.createElement(Ground,{groundColor: theme==="day" ? "#3a3a3d" : "#2a2a2d"}),
-      React.createElement(Blocks,{blocks}),
-      React.createElement(BatmanMinifig,{position:[playerPos.current.x, playerPos.current.y, playerPos.current.z]}),
+
+      React.createElement('group',{ref:worldRef},
+        React.createElement(Ground,{groundColor: theme==="day" ? "#3a3a3d" : "#2a2a2d"}),
+        React.createElement(Blocks,{blocks})
+      ),
+
       React.createElement(PlayerController,{positionRef:playerPos, blocks}),
       React.createElement(CameraRig,{playerPosRef:playerPos}),
-      React.createElement(RaycastPlacer,{ mode, blocks, setBlocks, bricks, getColor, getBrick, getRot })
+      React.createElement(RaycastPlacer,{ mode, blocks, setBlocks, bricks, getColor, getBrick, getRot, worldRef })
     ),
 
     React.createElement('div',{className:'crosshair'}),
@@ -485,19 +536,18 @@ function App(){
     React.createElement('div',{className:'topbar-left'},
       React.createElement('button',{className:'button', onClick:()=>setSidebarOpen(v=>!v)}, sidebarOpen?"Skjul":"Klodser (B)"),
       React.createElement('button',{className:'button', onClick:()=>setMode(m=>m==="build"?"gadget":"build")}, `Tilstand: ${mode==="build"?"Byg":"Gadget"} (Q)`),
-      React.createElement('button',{className:'button', onClick:()=>setBrickRot(r=>1-r)}, `Rotation (R): ${brickRot? "90°":"0°"}`),
-      React.createElement('button',{className:`button ${extrasOn?'active':''}`, onClick:()=>setExtrasOn(v=>!v)}, `⚙️ Ekstra: ${extrasOn?'Til':'Fra'}`)
+      React.createElement('button',{className:'button', onClick:()=>setBrickRot(r=>1-r)}, `Rotation (R): ${brickRot? "90°":"0°"}`)
     ),
     React.createElement('div',{className:'topbar-right'},
       React.createElement('button',{className:`toggle ${theme==="day"?"active":""}`, onClick:()=>setTheme(t=>t==="day"?"night":"day")}, theme==="day"?"☀️ Dag":"🌙 Nat"),
       React.createElement('div',{className:'title', style:{marginLeft:8, textAlign:'right'}},
-        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}}, extrasOn ? 'Safe v7 (Ekstra: TIL)' : 'Safe v7 (Ekstra: FRA)'),
+        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Safe v8'),
         React.createElement('div',{style:{color:"#fff", fontSize:16, fontWeight:600}},'LEGO Batman – Voxel Builder')
       )
     ),
 
     showHelp && React.createElement('div',{className:'hint'},
-      'WASD/Pile: Bevæg • Space/HOP • B: Sidebar • 1–9: Farve • R: Roter • Q: Byg/Gadget'
+      'WASD/Pile: Bevæg • Space/HOP • B: Sidebar • 1–9: Farve • R: Roter • Q: Byg/Gadget • Venstreklik: byg • Højreklik: fjern'
     ),
 
     React.createElement(Sidebar,{ open:sidebarOpen, setOpen:setSidebarOpen, bricks:BRICKS, selectedBrick, onSelectBrick:setSelectedBrick }),
