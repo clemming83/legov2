@@ -1,8 +1,5 @@
-// /src/characters/Batman.js  (v14.3 – fix: Box3.min usage, safer post-process)
-// - Vender Batman 180°
-// - Fod-align med samlet bbox (bruger box.min, ikke getMin())
-// - Mapper ansigt/torso teksturer via materiale-/mesh-navne (fail-soft)
-// - Fallback-minifig beholdes
+// /src/characters/Batman.js  (v14.4 – force-visible + safe parenting + robust bbox)
+// Løser "usynlig" ved at tvinge materialer/visible, og aligner fødder til spillerens collider.
 
 import React, { useEffect, useRef } from "https://esm.sh/react@18.3.1";
 import * as THREE from "https://esm.sh/three@0.160.0";
@@ -16,7 +13,7 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
     let mounted = true;
     const showErr = (m, s) => window.__showErrorOverlay?.(m, s);
 
-    // Forudlæs teksturer (fail-soft)
+    // (1) Forsøg at læse teksturer (fail-soft)
     let tFace = null, tTorso = null;
     try {
       const texLoader = new THREE.TextureLoader();
@@ -42,17 +39,23 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
             (obj) => {
               if (!mounted) return;
               try {
-                // Standardiser materialer + navnemapping
+                // (2) Force visible/materials + navne-baseret texture mapping
+                obj.name = "BatmanOBJ";
                 obj.traverse((c) => {
                   if (!c.isMesh) return;
-                  c.castShadow = true; c.receiveShadow = true;
+                  c.visible = true;
+                  c.castShadow = true;
+                  c.receiveShadow = true;
+                  c.renderOrder = 1;
 
                   const baseMat = new THREE.MeshStandardMaterial({
-                    color: (c.material?.color) ? c.material.color.clone() : new THREE.Color("#333"),
+                    color: (c.material?.color) ? c.material.color.clone() : new THREE.Color("#444"),
                     roughness: 0.55,
                     metalness: 0.05,
                     transparent: false,
                     opacity: 1.0,
+                    depthWrite: true,
+                    depthTest: true,
                     side: THREE.DoubleSide
                   });
 
@@ -68,25 +71,31 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
                   c.material = baseMat;
                 });
 
-                // Skaler til ~1.7 høj
+                // (3) Skaler til ~1.7m høj
                 const box = new THREE.Box3().setFromObject(obj);
                 const size = new THREE.Vector3(); box.getSize(size);
                 const scale = (size.y > 1e-4) ? (1.7 / size.y) : 1.0;
                 obj.scale.setScalar(scale);
 
-                // Fod-align via samlet bbox (brug box.min, ikke getMin())
+                // (4) Fod-align (samlet bbox → min.y)
                 const box2 = new THREE.Box3().setFromObject(obj);
-                const minY = box2.min.y;                // <-- fix
-                const colliderHalf = 0.85;              // 1.7 / 2
+                const minY = box2.min.y;
+                const colliderHalf = 0.85; // 1.7 / 2
                 const deltaY = (-colliderHalf - minY);
                 obj.position.y += deltaY;
 
-                // Vend 180°, så han kigger væk fra kameraet
+                // (5) Vend 180°
                 obj.rotation.y = Math.PI;
 
-                // Parent under hofte, så game.js hofte-bob virker på OBJ
-                if (hipRef?.current) hipRef.current.add(obj);
-                else group.current?.add(obj);
+                // (6) Sikker parenting under hofte – med fallback
+                const parent = hipRef?.current ?? group.current;
+                if (parent) {
+                  parent.add(obj);
+                  console.log("[Batman] OBJ added under", parent === hipRef?.current ? "hipRef" : "group");
+                } else {
+                  group.current?.add(obj);
+                  console.log("[Batman] OBJ added under group (fallback)");
+                }
               } catch (e) {
                 console.error("Batman OBJ post-process error", e);
                 showErr("Batman model post-process fejlede", e.stack);
@@ -95,7 +104,7 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
             undefined,
             (e) => {
               console.warn("OBJ load failed", e);
-              // Ikke fatal – fallback i game.js
+              // Ikke fatal – fallback håndteres i game.js
             }
           );
         } catch (e) {
@@ -118,13 +127,14 @@ export function BatmanOBJ({ hipRef, legLRef, legRRef }) {
 
   // Noder som game.js bruger til hofte/ben
   return React.createElement('group',{ref:group, position:[0,0,0]},
-    React.createElement('group',{ref:hipRef, position:[0,0,0]}),
-    React.createElement('group',{ref:legLRef, position:[-0.14, 0.48, 0]}),
-    React.createElement('group',{ref:legRRef, position:[ 0.14, 0.48, 0]})
+    React.createElement('group',{ref:hipRef, position:[0,0,0], visible:true}),
+    React.createElement('group',{ref:legLRef, position:[-0.14, 0.48, 0], visible:true}),
+    React.createElement('group',{ref:legRRef, position:[ 0.14, 0.48, 0], visible:true})
   );
 }
 
 export function BatmanMiniFallback({ hipRef, legLRef, legRRef }){
+  // Minifig fallback – bliver animeret fra game.js
   const body = "#151515", cowl = "#0d0d0d", belt = "#f1c40f", gray = "#444";
   return React.createElement('group',null,
     React.createElement('group',{ref:hipRef, position:[0,0,0]},
