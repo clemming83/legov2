@@ -1,19 +1,19 @@
 /**
- * LEGO Batman – Voxel Builder (Stable v5)
+ * LEGO Batman – Voxel Builder (Stable v6)
  * =========================================================
- * Index over ændringer (siden “stabil v1”):
+ * Index over ændringer (samlet):
  * 1) Stabil CDN-opsætning uden drei (kun react, react-dom, three, @react-three/fiber)
  * 2) Sidebar: klods-typer 2x2 / 2x4 / 2x6 / 4x4 / 4x6 + visuelle previews (stud-ikon)
  * 3) Farvevælger i bund (runde cirkler) + 1–9 genveje
  * 4) Rotation (R) af aflange klodser (90° toggle)
  * 5) Dag/Nat-toggle + dynamisk lys/himmel (Gradient+stjerner)
- * 6) Lyd: Musik on/off (rigtig musik via URL ?music=...), SFX on/off (place/remove/throw)
+ * 6) Lyd (stabil): Musik on/off via HTMLAudio (?music=URL), SFX on/off (place/remove/throw)
  * 7) Kollision med step-up (kan gå op på 1-blok kanter), bedre “onGround”, snap til top
  * 8) Batarang “E” fjerner hele klodser (alle celler i multi-brick)
- * 9) Simpel “villain” AI (Joker, Riddler, Penguin, Mr. Freeze, Harley) – wander/undvig
+ * 9) “Villains” (Joker, Riddler, Penguin, Mr. Freeze, Harley) – wander/undvig
  * 10) iPad/mobile: Touch-piletaster + HOP i nederste højre hjørne
  * 11) Altid jord: stor plane + basefliser ved y=0 (ingen uendeligt fald)
- * 12) Struktureret i ekstern fil (game.js) for nem opdatering
+ * 12) Struktur: ekstern fil (game.js) for nem opdatering
  * =========================================================
  */
 
@@ -56,76 +56,103 @@ const BRICK_MAP = new Map(BRICKS.map(b=>[b.id,b]));
 let BRICK_ID = 1;
 
 /* ------------------------------- Audio --------------------------------- */
+/** Stabil lyd: BG via HTMLAudio (ingen MediaElementSource), SFX via AudioContext */
 function useAudio(){
-  const ctxRef = useRef(null);
-  const bgGain = useRef(null);
-  const sfxGain = useRef(null);
-  let audioEl = null;
-  const ensureCtx = () => {
-    if (!ctxRef.current) {
+  const bgElRef = useRef(null);     // HTMLAudio element
+  const sfxCtxRef = useRef(null);   // kun til korte SFX
+  const sfxGainRef = useRef(null);
+
+  // Resume til iOS/Safari efter første berøring
+  useEffect(() => {
+    const onFirst = () => {
+      try { sfxCtxRef.current?.resume?.(); } catch {}
+      window.removeEventListener("pointerdown", onFirst);
+    };
+    window.addEventListener("pointerdown", onFirst);
+    return () => window.removeEventListener("pointerdown", onFirst);
+  }, []);
+
+  // Lazy init af SFX-context
+  const ensureSFX = () => {
+    if (!sfxCtxRef.current) {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      ctxRef.current = ctx;
-      bgGain.current = ctx.createGain(); bgGain.current.gain.value = 0.0; bgGain.current.connect(ctx.destination);
-      sfxGain.current = ctx.createGain(); sfxGain.current.gain.value = 0.6; sfxGain.current.connect(ctx.destination);
+      const g = ctx.createGain();
+      g.gain.value = 0.6;
+      g.connect(ctx.destination);
+      sfxCtxRef.current = ctx;
+      sfxGainRef.current = g;
     }
-    return ctxRef.current;
+    return sfxCtxRef.current;
   };
+
+  // Evt. musik-URL
   const getMusicURL = () => {
     const urlParam = new URLSearchParams(location.search).get("music");
     return window.MUSIC_URL || urlParam || "";
   };
+
+  // Tænd/sluk baggrundsmusik
   const setBGEnabled = async (on) => {
-    const ctx = ensureCtx();
     const url = getMusicURL();
-    if (on){
-      if (url) {
-        if (!audioEl) {
-          audioEl = new Audio(url);
-          audioEl.loop = true;
-          audioEl.crossOrigin = "anonymous";
-          const src = ctx.createMediaElementSource(audioEl);
-          src.connect(bgGain.current);
-        }
-        try { await audioEl.play(); } catch {}
-        bgGain.current.gain.linearRampToValueAtTime(0.6, ctx.currentTime+0.8);
-      } else {
-        // fallback synth
-        const o1 = ctx.createOscillator(); const g1 = ctx.createGain();
-        o1.type="sine"; o1.frequency.value=174.61; g1.gain.value=0.0; o1.connect(g1); g1.connect(bgGain.current); o1.start();
-        const o2 = ctx.createOscillator(); const g2 = ctx.createGain();
-        o2.type="triangle"; o2.frequency.value=174.61*1.5; g2.gain.value=0.0; o2.connect(g2); g2.connect(bgGain.current); o2.start();
-        bgGain.current.gain.linearRampToValueAtTime(0.45, ctx.currentTime+1.2);
-        g1.gain.linearRampToValueAtTime(0.05, ctx.currentTime+2);
-        g2.gain.linearRampToValueAtTime(0.04, ctx.currentTime+3);
-      }
-    } else {
-      if (audioEl) { audioEl.pause(); }
-      bgGain.current.gain.linearRampToValueAtTime(0.0, ctx.currentTime+0.5);
+    // Ingen URL -> ingen musik (bevidst, for stabilitet)
+    if (!url) {
+      if (bgElRef.current) { try { bgElRef.current.pause(); } catch {} }
+      return;
+    }
+    if (!bgElRef.current) {
+      const el = new Audio(url);
+      el.loop = true;
+      el.preload = "auto";
+      el.crossOrigin = "anonymous";
+      el.volume = 0.6;
+      bgElRef.current = el;
+    }
+    try {
+      if (on) { await bgElRef.current.play(); }
+      else { bgElRef.current.pause(); }
+    } catch (e) {
+      // Autoplay blok – ignorer
+      console.warn("BG audio play/pause issue:", e);
     }
   };
+
+  // Global SFX lydstyrke
   const setSFXEnabled = (on) => {
-    const ctx = ensureCtx();
-    sfxGain.current.gain.linearRampToValueAtTime(on ? 0.6 : 0.0, ctx.currentTime+0.05);
+    if (!sfxGainRef.current && on) ensureSFX();
+    if (sfxGainRef.current) {
+      const ctx = sfxCtxRef.current;
+      try {
+        sfxGainRef.current.gain.cancelScheduledValues(ctx.currentTime);
+        sfxGainRef.current.gain.linearRampToValueAtTime(on ? 0.6 : 0.0, ctx.currentTime + 0.05);
+      } catch {}
+    }
   };
+
+  // Korte SFX (oscillatorer + oprydning)
   const playSFX = (type="place") => {
-    const ctx = ensureCtx();
-    const g = ctx.createGain(); g.connect(sfxGain.current); g.gain.value = 0.0;
+    const ctx = ensureSFX();
+    const g = ctx.createGain(); g.gain.value = 0.0;
+    g.connect(sfxGainRef.current);
     const o = ctx.createOscillator();
     if (type==="place"){ o.type="square"; o.frequency.value=660; }
     else if (type==="remove"){ o.type="square"; o.frequency.value=440; }
     else if (type==="throw"){ o.type="sawtooth"; o.frequency.value=880; }
     else { o.type="sine"; o.frequency.value=520; }
-    o.connect(g); o.start();
+    o.connect(g);
     const now = ctx.currentTime;
+    o.start(now);
     g.gain.linearRampToValueAtTime(0.14, now+0.02);
-    if (type==="throw"){ o.frequency.exponentialRampToValueAtTime(220, now+0.25); g.gain.linearRampToValueAtTime(0.0, now+0.26); o.stop(now+0.27); }
-    else { g.gain.linearRampToValueAtTime(0.0, now+0.12); o.stop(now+0.13); }
+    if (type==="throw"){
+      try { o.frequency.exponentialRampToValueAtTime(220, now+0.25); } catch {}
+      g.gain.linearRampToValueAtTime(0.0, now+0.26);
+      o.stop(now+0.27);
+    } else {
+      g.gain.linearRampToValueAtTime(0.0, now+0.12);
+      o.stop(now+0.13);
+    }
+    o.onended = () => { try { o.disconnect(); } catch{} try { g.disconnect(); } catch{} };
   };
-  useEffect(() => {
-    const onFirst = () => { ensureCtx(); window.removeEventListener("pointerdown", onFirst); };
-    window.addEventListener("pointerdown", onFirst);
-    return () => window.removeEventListener("pointerdown", onFirst);
-  }, []);
+
   return { setBGEnabled, playSFX, setSFXEnabled };
 }
 
@@ -714,7 +741,7 @@ function App(){
       React.createElement('button',{className:`toggle ${bgOn?"active":""}`, onClick:()=>setBgOn(v=>!v)}, bgOn?"🎵 Musik: Til":"🎵 Musik: Fra"),
       React.createElement('button',{className:`toggle ${sfxOn?"active":""}`, onClick:()=>setSfxOn(v=>!v)}, sfxOn?"🔊 SFX: Til":"🔇 SFX: Fra"),
       React.createElement('div',{className:'title', style:{marginLeft:8, textAlign:'right'}},
-        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Stable v5'),
+        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Stable v6'),
         React.createElement('div',{style:{color:"#fff", fontSize:16, fontWeight:600}},'LEGO Batman – Voxel Builder')
       )
     ),
