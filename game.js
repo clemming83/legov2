@@ -1,21 +1,6 @@
-/**
- * LEGO Batman – Voxel Builder (Stable v6)
- * =========================================================
- * Index over ændringer (samlet):
- * 1) Stabil CDN-opsætning uden drei (kun react, react-dom, three, @react-three/fiber)
- * 2) Sidebar: klods-typer 2x2 / 2x4 / 2x6 / 4x4 / 4x6 + visuelle previews (stud-ikon)
- * 3) Farvevælger i bund (runde cirkler) + 1–9 genveje
- * 4) Rotation (R) af aflange klodser (90° toggle)
- * 5) Dag/Nat-toggle + dynamisk lys/himmel (Gradient+stjerner)
- * 6) Lyd (stabil): Musik on/off via HTMLAudio (?music=URL), SFX on/off (place/remove/throw)
- * 7) Kollision med step-up (kan gå op på 1-blok kanter), bedre “onGround”, snap til top
- * 8) Batarang “E” fjerner hele klodser (alle celler i multi-brick)
- * 9) “Villains” (Joker, Riddler, Penguin, Mr. Freeze, Harley) – wander/undvig
- * 10) iPad/mobile: Touch-piletaster + HOP i nederste højre hjørne
- * 11) Altid jord: stor plane + basefliser ved y=0 (ingen uendeligt fald)
- * 12) Struktur: ekstern fil (game.js) for nem opdatering
- * =========================================================
- */
+// LEGO Batman – Voxel Builder (Safe Mode v7)
+// Første load: minimal scene (ingen lyd, ingen villains, ingen batarang)
+// Ekstra features kan tændes i UI (⚙️ Ekstra: Til/Fra)
 
 import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
 import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
@@ -55,124 +40,13 @@ const BRICKS = [
 const BRICK_MAP = new Map(BRICKS.map(b=>[b.id,b]));
 let BRICK_ID = 1;
 
-/* ------------------------------- Audio --------------------------------- */
-/** Stabil lyd: BG via HTMLAudio (ingen MediaElementSource), SFX via AudioContext */
-function useAudio(){
-  const bgElRef = useRef(null);     // HTMLAudio element
-  const sfxCtxRef = useRef(null);   // kun til korte SFX
-  const sfxGainRef = useRef(null);
-
-  // Resume til iOS/Safari efter første berøring
-  useEffect(() => {
-    const onFirst = () => {
-      try { sfxCtxRef.current?.resume?.(); } catch {}
-      window.removeEventListener("pointerdown", onFirst);
-    };
-    window.addEventListener("pointerdown", onFirst);
-    return () => window.removeEventListener("pointerdown", onFirst);
-  }, []);
-
-  // Lazy init af SFX-context
-  const ensureSFX = () => {
-    if (!sfxCtxRef.current) {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const g = ctx.createGain();
-      g.gain.value = 0.6;
-      g.connect(ctx.destination);
-      sfxCtxRef.current = ctx;
-      sfxGainRef.current = g;
-    }
-    return sfxCtxRef.current;
-  };
-
-  // Evt. musik-URL
-  const getMusicURL = () => {
-    const urlParam = new URLSearchParams(location.search).get("music");
-    return window.MUSIC_URL || urlParam || "";
-  };
-
-  // Tænd/sluk baggrundsmusik
-  const setBGEnabled = async (on) => {
-    const url = getMusicURL();
-    // Ingen URL -> ingen musik (bevidst, for stabilitet)
-    if (!url) {
-      if (bgElRef.current) { try { bgElRef.current.pause(); } catch {} }
-      return;
-    }
-    if (!bgElRef.current) {
-      const el = new Audio(url);
-      el.loop = true;
-      el.preload = "auto";
-      el.crossOrigin = "anonymous";
-      el.volume = 0.6;
-      bgElRef.current = el;
-    }
-    try {
-      if (on) { await bgElRef.current.play(); }
-      else { bgElRef.current.pause(); }
-    } catch (e) {
-      // Autoplay blok – ignorer
-      console.warn("BG audio play/pause issue:", e);
-    }
-  };
-
-  // Global SFX lydstyrke
-  const setSFXEnabled = (on) => {
-    if (!sfxGainRef.current && on) ensureSFX();
-    if (sfxGainRef.current) {
-      const ctx = sfxCtxRef.current;
-      try {
-        sfxGainRef.current.gain.cancelScheduledValues(ctx.currentTime);
-        sfxGainRef.current.gain.linearRampToValueAtTime(on ? 0.6 : 0.0, ctx.currentTime + 0.05);
-      } catch {}
-    }
-  };
-
-  // Korte SFX (oscillatorer + oprydning)
-  const playSFX = (type="place") => {
-    const ctx = ensureSFX();
-    const g = ctx.createGain(); g.gain.value = 0.0;
-    g.connect(sfxGainRef.current);
-    const o = ctx.createOscillator();
-    if (type==="place"){ o.type="square"; o.frequency.value=660; }
-    else if (type==="remove"){ o.type="square"; o.frequency.value=440; }
-    else if (type==="throw"){ o.type="sawtooth"; o.frequency.value=880; }
-    else { o.type="sine"; o.frequency.value=520; }
-    o.connect(g);
-    const now = ctx.currentTime;
-    o.start(now);
-    g.gain.linearRampToValueAtTime(0.14, now+0.02);
-    if (type==="throw"){
-      try { o.frequency.exponentialRampToValueAtTime(220, now+0.25); } catch {}
-      g.gain.linearRampToValueAtTime(0.0, now+0.26);
-      o.stop(now+0.27);
-    } else {
-      g.gain.linearRampToValueAtTime(0.0, now+0.12);
-      o.stop(now+0.13);
-    }
-    o.onended = () => { try { o.disconnect(); } catch{} try { g.disconnect(); } catch{} };
-  };
-
-  return { setBGEnabled, playSFX, setSFXEnabled };
-}
-
 /* -------------------------------- World -------------------------------- */
-function Ground({ size = 400, groundColor="#2a2a2d" }) {
-  const { scene } = useThree();
-  useEffect(() => { scene.fog = null; }, [scene]);
-  return (
-    React.createElement('mesh',{rotation:[ -Math.PI / 2, 0, 0 ], receiveShadow:true},
-      React.createElement('planeGeometry',{args:[size, size, size, size]}),
-      React.createElement('meshStandardMaterial',{color:groundColor})
-    )
-  );
-}
 function GradientSky({ mode="night" }) {
   const { gl } = useThree();
   useEffect(() => { gl.setClearColor(new THREE.Color(mode==="day" ? 0x87b6ff : 0x06080f)); }, [gl, mode]);
   return null;
 }
-function StarsSimple({ count = 600, visible=true }) {
+function StarsSimple({ count = 300, visible=true }) {
   const positions = useMemo(() => {
     const arr = new Float32Array(count * 3);
     for (let i=0;i<count;i++){
@@ -191,6 +65,14 @@ function StarsSimple({ count = 600, visible=true }) {
       React.createElement('bufferAttribute',{attach:"attributes-position", array:positions, itemSize:3, count:positions.length/3})
     ),
     React.createElement('pointsMaterial',{size:0.5, sizeAttenuation:true, color:"#9fc9ff"})
+  );
+}
+function Ground({ size = 400, groundColor="#2a2a2d" }) {
+  return (
+    React.createElement('mesh',{rotation:[ -Math.PI / 2, 0, 0 ], receiveShadow:true},
+      React.createElement('planeGeometry',{args:[size, size, size, size]}),
+      React.createElement('meshStandardMaterial',{color:groundColor})
+    )
   );
 }
 function BlockCell({ position, color, transparent=false, opacity=1 }){
@@ -219,21 +101,6 @@ function Blocks({ blocks }){
     })
   );
 }
-function BatmanMinifig({ position }){
-  const body = "#151515", cowl = "#0d0d0d", belt = "#f1c40f", gray = "#444";
-  return React.createElement('group',{position},
-    React.createElement('mesh',{position:[ -0.15, 0.25, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}), React.createElement('meshStandardMaterial',{color:gray})),
-    React.createElement('mesh',{position:[ 0.15, 0.25, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}), React.createElement('meshStandardMaterial',{color:gray})),
-    React.createElement('mesh',{position:[0, 0.85, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.6,0.7,0.35]}), React.createElement('meshStandardMaterial',{color:body})),
-    React.createElement('mesh',{position:[0, 0.55, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.62,0.1,0.37]}), React.createElement('meshStandardMaterial',{color:belt})),
-    React.createElement('mesh',{position:[ -0.45, 0.85, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.2,0.5,0.2]}), React.createElement('meshStandardMaterial',{color:body})),
-    React.createElement('mesh',{position:[ 0.45, 0.85, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.2,0.5,0.2]}), React.createElement('meshStandardMaterial',{color:body})),
-    React.createElement('mesh',{position:[0, 1.35, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.35,0.35,0.3]}), React.createElement('meshStandardMaterial',{color:cowl})),
-    React.createElement('mesh',{position:[ -0.12, 1.6, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.07,0.15,0.07]}), React.createElement('meshStandardMaterial',{color:cowl})),
-    React.createElement('mesh',{position:[ 0.12, 1.6, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.07,0.15,0.07]}), React.createElement('meshStandardMaterial',{color:cowl})),
-    React.createElement('mesh',{position:[0, 0.9, -0.23], castShadow:true}, React.createElement('boxGeometry',{args:[0.6,0.8,0.02]}), React.createElement('meshStandardMaterial',{color:cowl}))
-  );
-}
 
 /* ----------------------- Collision/physics w/ step ---------------------- */
 let currentYaw = 0;
@@ -245,10 +112,7 @@ function collidesAt(p, size, blocks){
   for (let x=minX; x<=maxX; x++){
     for (let y=minY; y<=maxY; y++){
       for (let z=minZ; z<=maxZ; z++){
-        if (y < 0) { // gulv
-          if (y <= -1) return true;
-          continue;
-        }
+        if (y < 0) { if (y <= -1) return true; continue; } // gulv
         if (blocks.has(`${x}|${y}|${z}`)) return true;
       }
     }
@@ -279,14 +143,12 @@ function snapToTop(pos, size, blocks){
 }
 function aabbVsBlocks(next, size, blocks, currentY, stepHeight=0.6){
   const pos = { x: next.x, y: next.y, z: next.z };
+
   let testX = { x: pos.x, y: currentY, z: pos.z };
   if (collidesAt(testX, size, blocks)){
     const stepped = tryStepUp({x:testX.x, y:currentY, z:testX.z}, testX, size, blocks, stepHeight);
     if (stepped.ok){ testX = stepped.pos; }
-    else {
-      const dir = Math.sign(testX.x - Math.round(testX.x)) || (testX.x>=0?1:-1);
-      while (collidesAt(testX, size, blocks)) testX.x += dir * 0.01;
-    }
+    else { const dir = Math.sign(testX.x - Math.round(testX.x)) || (testX.x>=0?1:-1); let n=0; while (collidesAt(testX, size, blocks) && n++<200) testX.x += dir * 0.01; }
   }
   pos.x = testX.x; pos.y = testX.y; pos.z = testX.z;
 
@@ -294,10 +156,7 @@ function aabbVsBlocks(next, size, blocks, currentY, stepHeight=0.6){
   if (collidesAt(testZ, size, blocks)){
     const stepped = tryStepUp({x:testZ.x, y:pos.y, z:testZ.z}, testZ, size, blocks, stepHeight);
     if (stepped.ok){ testZ = stepped.pos; }
-    else {
-      const dir = Math.sign(testZ.z - Math.round(testZ.z)) || (testZ.z>=0?1:-1);
-      while (collidesAt(testZ, size, blocks)) testZ.z += dir * 0.01;
-    }
+    else { const dir = Math.sign(testZ.z - Math.round(testZ.z)) || (testZ.z>=0?1:-1); let n=0; while (collidesAt(testZ, size, blocks) && n++<200) testZ.z += dir * 0.01; }
   }
   pos.x = testZ.x; pos.y = testZ.y; pos.z = testZ.z;
 
@@ -307,26 +166,37 @@ function aabbVsBlocks(next, size, blocks, currentY, stepHeight=0.6){
     let n=0; while (collidesAt(testY, size, blocks) && n++<2000) testY.y += (dir===0? (testY.y>=0?1:-1):dir) * 0.01;
   }
   pos.y = testY.y;
+
   snapToTop(pos, size, blocks);
   if (pos.y < size.y/2) pos.y = size.y/2;
   return pos;
 }
 
 /* ------------------------------- Player -------------------------------- */
+function BatmanMinifig({ position }){
+  const body = "#151515", cowl = "#0d0d0d", belt = "#f1c40f", gray = "#444";
+  return React.createElement('group',{position},
+    React.createElement('mesh',{position:[ -0.15, 0.25, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}), React.createElement('meshStandardMaterial',{color:gray})),
+    React.createElement('mesh',{position:[ 0.15, 0.25, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}), React.createElement('meshStandardMaterial',{color:gray})),
+    React.createElement('mesh',{position:[0, 0.85, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.6,0.7,0.35]}), React.createElement('meshStandardMaterial',{color:body})),
+    React.createElement('mesh',{position:[0, 0.55, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.62,0.1,0.37]}), React.createElement('meshStandardMaterial',{color:belt})),
+    React.createElement('mesh',{position:[ -0.45, 0.85, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.2,0.5,0.2]}), React.createElement('meshStandardMaterial',{color:body})),
+    React.createElement('mesh',{position:[ 0.45, 0.85, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.2,0.5,0.2]}), React.createElement('meshStandardMaterial',{color:body})),
+    React.createElement('mesh',{position:[0, 1.35, 0], castShadow:true}, React.createElement('boxGeometry',{args:[0.35,0.35,0.3]}), React.createElement('meshStandardMaterial',{color:cowl})),
+    React.createElement('mesh',{position:[ -0.12, 1.6, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.07,0.15,0.07]}), React.createElement('meshStandardMaterial',{color:cowl})),
+    React.createElement('mesh',{position:[ 0.12, 1.6, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.07,0.15,0.07]}), React.createElement('meshStandardMaterial',{color:cowl})),
+    React.createElement('mesh',{position:[0, 0.9, -0.23], castShadow:true}, React.createElement('boxGeometry',{args:[0.6,0.8,0.02]}), React.createElement('meshStandardMaterial',{color:cowl}))
+  );
+}
 function PlayerController({ positionRef, blocks }){
   const ref = useRef(null);
   const vel = useRef(vec3(0,0,0));
   const onGround = useRef(true);
 
   useEffect(() => {
-    const onKeyDown = (e) => {
-      if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," ","w","a","s","d","b","1","2","3","4","5","6","7","8","9","q","e","r"].includes(e.key.toLowerCase()) || e.key === " ") {
-        e.preventDefault();
-      }
-      setKey(e.key, true);
-    };
+    const onKeyDown = (e) => { setKey(e.key, true); };
     const onKeyUp = (e) => setKey(e.key, false);
-    window.addEventListener("keydown", onKeyDown, { passive: false });
+    window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
@@ -334,10 +204,9 @@ function PlayerController({ positionRef, blocks }){
     };
   }, []);
 
-  useFrame((_, dt) => {
-    const speed = 3.8;
-    const jumpV = 6.4;
-    const gravity = 9.8;
+  useFrame((_, _dt) => {
+    const dt = Math.min(_dt, 1/60); // clamp
+    const speed = 3.8, jumpV = 6.4, gravity = 9.8;
 
     let forward = 0, strafe = 0;
     if (isDown("arrowup") || isDown("w")) forward += 1;
@@ -384,8 +253,6 @@ function PlayerController({ positionRef, blocks }){
     React.createElement(BatmanMinifig,{position:[0,0,0]})
   );
 }
-
-/* -------------------------------- Camera ------------------------------- */
 function CameraRig({ playerPosRef }){
   const { camera } = useThree();
   useFrame(() => {
@@ -399,7 +266,7 @@ function CameraRig({ playerPosRef }){
   return null;
 }
 
-/* -------------------------- Multi-cell bricks -------------------------- */
+/* -------------------------- Build helpers ------------------------------ */
 function addBrickAt(base, brick, colorId, rot, blocks, bricks){
   const id = BRICK_ID++;
   const w = rot ? brick.l : brick.w;
@@ -430,13 +297,10 @@ function removeBrickAtCell(cx,cy,cz, blocks, bricks){
   bricks.delete(id);
   return true;
 }
-
-/* -------------------------------- Build -------------------------------- */
-function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, getRot, sfx }){
-  const { camera, gl, scene } = useThree();
+function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, getRot }){
+  const { camera, gl } = useThree();
   const raycaster = useMemo(()=> new THREE.Raycaster(), []);
   const pointer = useMemo(()=> new THREE.Vector2(), []);
-
   useEffect(() => {
     const onContext = (e) => e.preventDefault();
     gl.domElement.addEventListener("contextmenu", onContext);
@@ -450,51 +314,33 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
     pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
 
-    const blockMeshes = [];
-    scene.traverse(obj => { if (obj.type === "Group" && obj.children?.length) blockMeshes.push(obj); });
-    const intersectsBlocks = raycaster.intersectObjects(blockMeshes, true);
+    // Raycast mod en vandret plane (y=0) altid, og kun mod eksisterende blokke via positions-snap
+    // 1) tjek "blok" hit ved at sample nærmeste integer position fra ray
+    const ground = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+    const intersection = new THREE.Vector3();
+    raycaster.ray.intersectPlane(ground, intersection);
 
-    if (e.button === 2) {
-      if (intersectsBlocks.length > 0) {
-        const parent = intersectsBlocks[0].object.parent;
-        const pos = parent.position;
-        const cx = Math.round(pos.x), cy = Math.round(pos.y), cz = Math.round(pos.z);
-        setBlocks(prev => {
-          const nb = new Map(prev);
-          const ok = removeBrickAtCell(cx,cy,cz, nb, bricks);
-          if (ok && sfx) sfx("remove");
-          return nb;
-        });
-      }
-      return;
-    }
-
+    // venstreklik = placér, højreklik = fjern (hvis der er en blok)
     const colorId = getColor();
     const brick = BRICK_MAP.get(getBrick());
     const rot = getRot();
-    if (intersectsBlocks.length > 0) {
-      const hit = intersectsBlocks[0];
-      const normal = hit.face?.normal?.clone() ?? new THREE.Vector3(0,1,0);
-      const worldNormal = normal.applyMatrix3(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld)).normalize();
-      const place = hit.point.clone().add(worldNormal.multiplyScalar(0.5)).floor().addScalar(0.5);
-      const base = { x: Math.round(place.x), y: Math.round(place.y), z: Math.round(place.z) };
+
+    if (e.button === 2) {
+      if (!intersection) return;
+      const cx = Math.round(intersection.x), cy = 0, cz = Math.round(intersection.z);
       setBlocks(prev => {
         const nb = new Map(prev);
-        const ok = addBrickAt(base, brick, colorId, rot, nb, bricks);
-        if (ok && sfx) sfx("place");
+        removeBrickAtCell(cx,cy,cz, nb, bricks);
         return nb;
       });
       return;
     }
-    const ground = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
-    const intersection = new THREE.Vector3();
-    raycaster.ray.intersectPlane(ground, intersection);
+
     if (intersection) {
       const base = { x: Math.round(intersection.x), y: 0, z: Math.round(intersection.z) };
       setBlocks(prev => {
         const nb = new Map(prev);
-        const ok = addBrickAt(base, brick, colorId, rot, nb, bricks);
-        if (ok && sfx) sfx("place");
+        addBrickAt(base, brick, colorId, rot, nb, bricks);
         return nb;
       });
     }
@@ -504,103 +350,9 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
     const el = gl.domElement;
     el.addEventListener("mousedown", handlePointerDown);
     return () => el.removeEventListener("mousedown", handlePointerDown);
-  }, [gl, camera, scene, mode, getColor, getBrick, getRot, sfx]);
+  }, [gl, camera, mode, getColor, getBrick, getRot]);
 
   return null;
-}
-
-/* ------------------------------- Batarang ------------------------------- */
-function BatarangSystem({ blocks, setBlocks, bricks, sfx }){
-  const { camera } = useThree();
-  const [bats, setBats] = useState([]);
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.key.toLowerCase() === "e"){
-        const dir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion).normalize();
-        const pos = camera.position.clone().add(dir.clone().multiplyScalar(0.6)).add(new THREE.Vector3(0,-0.1,0));
-        const speed = 12;
-        setBats(prev => [...prev, { id: Math.random(), pos, vel: dir.multiplyScalar(speed), ttl: 2.0 }]);
-        sfx && sfx("throw");
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [camera, sfx]);
-
-  useFrame((_, dt) => {
-    if (bats.length === 0) return;
-    setBats(prev => {
-      const next = [];
-      for (const b of prev){
-        const np = b.pos.clone().add(b.vel.clone().multiplyScalar(dt));
-        const cx = Math.round(np.x), cy = Math.round(np.y), cz = Math.round(np.z);
-        const key = `${cx}|${cy}|${cz}`;
-        let hit = false;
-        if (blocks.has(key)){
-          hit = true;
-          setBlocks((p)=>{ const m = new Map(p);
-            const cell = m.get(key);
-            if (cell && cell.brick){ const list = bricks.get(cell.brick) || []; for (const k of list) m.delete(k); bricks.delete(cell.brick); }
-            return m;
-          });
-        }
-        const nt = b.ttl - dt;
-        if (!hit && nt > 0){ next.push({ ...b, pos: np, ttl: nt }); }
-      }
-      return next;
-    });
-  });
-
-  return React.createElement('group',null,
-    bats.map(b => React.createElement('mesh',{key:b.id, position:b.pos, castShadow:true},
-      React.createElement('torusGeometry',{args:[0.15, 0.05, 8, 16]}),
-      React.createElement('meshStandardMaterial',{color:"#f1c40f"})
-    ))
-  );
-}
-
-/* -------------------------------- Villains ----------------------------- */
-const VILLAIN_LIST = [
-  { name:"Joker", color:"#8e24aa" },
-  { name:"Riddler", color:"#2e7d32" },
-  { name:"Penguin", color:"#0d47a1" },
-  { name:"Mr. Freeze", color:"#64b5f6" },
-  { name:"Harley", color:"#d32f2f" },
-];
-function Villains({ count=5, playerPosRef }){
-  const refs = useRef([...Array(count)].map(()=>({ pos: new THREE.Vector3(
-    (Math.random()*30-15)|0, 0.5, (Math.random()*30-15)|0
-  ), dir: Math.random()*Math.PI*2 })));
-  const data = useMemo(()=> Array.from({length:count}, (_,i)=> VILLAIN_LIST[i%VILLAIN_LIST.length]), [count]);
-
-  useFrame((_, dt) => {
-    const player = playerPosRef.current;
-    for (const r of refs.current){
-      const toPlayer = new THREE.Vector3(player.x - r.pos.x, 0, player.z - r.pos.z);
-      const dist = toPlayer.length();
-      if (dist < 4){ toPlayer.normalize(); r.dir = Math.atan2(-toPlayer.x, -toPlayer.z); }
-      else if (Math.random() < 0.01){ r.dir += (Math.random()-0.5)*0.8; }
-      const speed = 1.3;
-      r.pos.x += Math.sin(r.dir) * speed * dt;
-      r.pos.z += Math.cos(r.dir) * speed * dt;
-      r.pos.y = 0.5;
-    }
-  });
-
-  return React.createElement('group', null,
-    refs.current.map((r,i) =>
-      React.createElement('group',{ key:i, position:[r.pos.x, r.pos.y, r.pos.z] },
-        React.createElement('mesh',{castShadow:true},
-          React.createElement('boxGeometry',{args:[0.8,1.2,0.6]}),
-          React.createElement('meshStandardMaterial',{color:data[i].color})
-        ),
-        React.createElement('mesh',{position:[0,0.8,0.35], castShadow:true},
-          React.createElement('boxGeometry',{args:[0.6,0.4,0.02]}),
-          React.createElement('meshStandardMaterial',{color:"#000"})
-        )
-      )
-    )
-  );
 }
 
 /* --------------------------------- UI ---------------------------------- */
@@ -641,7 +393,7 @@ function Sidebar({ open, setOpen, bricks, selectedBrick, onSelectBrick }){
       ))
     ),
     React.createElement('hr',{style:{borderColor:"rgba(255,255,255,.1)", margin:"16px 0"}}),
-    React.createElement('p',{style:{fontSize:12,opacity:.7}},'Tip: R roterer aflange klodser • Højreklik fjerner en hel klods • Venstreklik placerer')
+    React.createElement('p',{style:{fontSize:12,opacity:.7}},'Tip: R roterer aflange klodser • Højreklik fjerner • Venstreklik placerer')
   ) : null;
 }
 function TouchControls(){
@@ -680,12 +432,9 @@ function App(){
   const [brickRot, setBrickRot] = useState(0);
   const [mode, setMode] = useState("build");
   const [theme, setTheme] = useState("night");
-  const [bgOn, setBgOn] = useState(false);
-  const [sfxOn, setSfxOn] = useState(true);
-  const audio = useAudio();
 
-  useEffect(()=>{ audio.setBGEnabled(bgOn); }, [bgOn]);
-  useEffect(()=>{ audio.setSFXEnabled(sfxOn); }, [sfxOn]);
+  // “Ekstra” er FRA ved første load (for at undgå freeze)
+  const [extrasOn, setExtrasOn] = useState(false);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -710,9 +459,17 @@ function App(){
   useEffect(() => { const t = setTimeout(()=>setShowHelp(false), 6000); return () => clearTimeout(t); }, []);
 
   return React.createElement('div',{style:{width:"100%",height:"100%",position:"relative",background:"#000"}},
-    React.createElement(Canvas, { shadows:true, camera:{ position:[0,2,8], fov:60 } },
+    React.createElement(Canvas, {
+      shadows:true,
+      camera:{ position:[0,2,8], fov:60 },
+      dpr:[1, 1.5],
+      gl:{
+        antialias:false, powerPreference:"high-performance",
+        alpha:false, stencil:false, depth:true, preserveDrawingBuffer:false
+      }
+    },
       React.createElement(GradientSky,{mode:theme}),
-      React.createElement(StarsSimple,{count:800, visible: theme==="night"}),
+      React.createElement(StarsSimple,{count: extrasOn ? 500 : 200, visible: theme==="night"}),
       React.createElement('ambientLight',{intensity: theme==="day" ? 0.9 : 0.5}),
       React.createElement('directionalLight',{position:[5,10,5], intensity: theme==="day" ? 1.2 : 0.8, castShadow:true, color: theme==="day" ? "#ffffff" : "#a0b8ff"}),
       React.createElement(Ground,{groundColor: theme==="day" ? "#3a3a3d" : "#2a2a2d"}),
@@ -720,13 +477,7 @@ function App(){
       React.createElement(BatmanMinifig,{position:[playerPos.current.x, playerPos.current.y, playerPos.current.z]}),
       React.createElement(PlayerController,{positionRef:playerPos, blocks}),
       React.createElement(CameraRig,{playerPosRef:playerPos}),
-      React.createElement(RaycastPlacer,{
-        mode, blocks, setBlocks, bricks,
-        getColor, getBrick, getRot,
-        sfx: sfxOn ? audio.playSFX : null
-      }),
-      React.createElement(BatarangSystem,{blocks, setBlocks, bricks, sfx: sfxOn ? audio.playSFX : null}),
-      React.createElement(Villains,{count:5, playerPosRef:playerPos})
+      React.createElement(RaycastPlacer,{ mode, blocks, setBlocks, bricks, getColor, getBrick, getRot })
     ),
 
     React.createElement('div',{className:'crosshair'}),
@@ -734,36 +485,23 @@ function App(){
     React.createElement('div',{className:'topbar-left'},
       React.createElement('button',{className:'button', onClick:()=>setSidebarOpen(v=>!v)}, sidebarOpen?"Skjul":"Klodser (B)"),
       React.createElement('button',{className:'button', onClick:()=>setMode(m=>m==="build"?"gadget":"build")}, `Tilstand: ${mode==="build"?"Byg":"Gadget"} (Q)`),
-      React.createElement('button',{className:'button', onClick:()=>setBrickRot(r=>1-r)}, `Rotation (R): ${brickRot? "90°":"0°"}`)
+      React.createElement('button',{className:'button', onClick:()=>setBrickRot(r=>1-r)}, `Rotation (R): ${brickRot? "90°":"0°"}`),
+      React.createElement('button',{className:`button ${extrasOn?'active':''}`, onClick:()=>setExtrasOn(v=>!v)}, `⚙️ Ekstra: ${extrasOn?'Til':'Fra'}`)
     ),
     React.createElement('div',{className:'topbar-right'},
       React.createElement('button',{className:`toggle ${theme==="day"?"active":""}`, onClick:()=>setTheme(t=>t==="day"?"night":"day")}, theme==="day"?"☀️ Dag":"🌙 Nat"),
-      React.createElement('button',{className:`toggle ${bgOn?"active":""}`, onClick:()=>setBgOn(v=>!v)}, bgOn?"🎵 Musik: Til":"🎵 Musik: Fra"),
-      React.createElement('button',{className:`toggle ${sfxOn?"active":""}`, onClick:()=>setSfxOn(v=>!v)}, sfxOn?"🔊 SFX: Til":"🔇 SFX: Fra"),
       React.createElement('div',{className:'title', style:{marginLeft:8, textAlign:'right'}},
-        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Stable v6'),
+        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}}, extrasOn ? 'Safe v7 (Ekstra: TIL)' : 'Safe v7 (Ekstra: FRA)'),
         React.createElement('div',{style:{color:"#fff", fontSize:16, fontWeight:600}},'LEGO Batman – Voxel Builder')
       )
     ),
 
     showHelp && React.createElement('div',{className:'hint'},
-      'WASD/Pile: Bevæg • Space/HOP • B: Sidebar • 1–9: Farve • R: Roter • Q: Byg/Gadget • E: Batarang'
+      'WASD/Pile: Bevæg • Space/HOP • B: Sidebar • 1–9: Farve • R: Roter • Q: Byg/Gadget'
     ),
 
-    React.createElement(Sidebar,{
-      open:sidebarOpen,
-      setOpen:setSidebarOpen,
-      bricks:BRICKS,
-      selectedBrick,
-      onSelectBrick:setSelectedBrick
-    }),
-
-    React.createElement(ColorHotbar,{
-      colors:COLORS,
-      selected:colorIndex,
-      onSelect:setColorIndex
-    }),
-
+    React.createElement(Sidebar,{ open:sidebarOpen, setOpen:setSidebarOpen, bricks:BRICKS, selectedBrick, onSelectBrick:setSelectedBrick }),
+    React.createElement(ColorHotbar,{ colors:COLORS, selected:colorIndex, onSelect:setColorIndex }),
     React.createElement(TouchControls,null)
   );
 }
