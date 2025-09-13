@@ -1,5 +1,6 @@
-// LEGO Batman – Voxel Builder (Safe Mode v8)
-// Rettelser: ingen dobbelt-Batman, forbedret physics (step/snap), vertikal byg, hurtig/sikker raycast.
+// LEGO Batman – Voxel Builder (Safe v10)
+// Fixes: no load-flicker (no z-fighting), Space no longer toggles day/night,
+// can stand on/stack blocks (stepHeight=1.1), base tiles non-solid & thin.
 
 import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
 import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
@@ -15,16 +16,16 @@ const toKey = (x,y,z) => `${x}|${y}|${z}`;
 
 /* ------------------------------- Farver -------------------------------- */
 const COLORS = [
-  { id: "black", label: "Black", color: "#111111" },
-  { id: "darkgray", label: "Dark Gray", color: "#3a3a3a" },
+  { id: "black",     label: "Black",  color: "#111111" },
+  { id: "darkgray",  label: "Dark Gray", color: "#3a3a3a" },
   { id: "lightgray", label: "Light Gray", color: "#9aa0a6" },
-  { id: "yellow", label: "Yellow", color: "#ffd400" },
-  { id: "blue", label: "Blue", color: "#1565c0" },
-  { id: "purple", label: "Purple", color: "#6a1b9a" },
-  { id: "red", label: "Red", color: "#d32f2f" },
-  { id: "green", label: "Green", color: "#2e7d32" },
-  { id: "white", label: "White", color: "#eeeeee" },
-  { id: "trans", label: "Translucent", color: "#a0d8ff", transparent: true, opacity: 0.5 },
+  { id: "yellow",    label: "Yellow", color: "#ffd400" },
+  { id: "blue",      label: "Blue",   color: "#1565c0" },
+  { id: "purple",    label: "Purple", color: "#6a1b9a" },
+  { id: "red",       label: "Red",    color: "#d32f2f" },
+  { id: "green",     label: "Green",  color: "#2e7d32" },
+  { id: "white",     label: "White",  color: "#eeeeee" },
+  { id: "trans",     label: "Translucent", color: "#a0d8ff", transparent: true, opacity: 0.5 },
 ];
 const DEFAULT_COLOR_INDEX = 3;
 
@@ -67,14 +68,24 @@ function StarsSimple({ count = 300, visible=true }) {
   );
 }
 function Ground({ size = 400, groundColor="#2a2a2d" }) {
+  // Flyt planet lidt ned for at undgå z-fighting med base tiles
   return (
-    React.createElement('mesh',{rotation:[ -Math.PI / 2, 0, 0 ], receiveShadow:true},
+    React.createElement('mesh',{position:[0,-0.51,0], rotation:[ -Math.PI / 2, 0, 0 ], receiveShadow:true},
       React.createElement('planeGeometry',{args:[size, size, size, size]}),
       React.createElement('meshStandardMaterial',{color:groundColor})
     )
   );
 }
-function BlockCell({ position, color, transparent=false, opacity=1 }){
+function BlockCell({ position, color, transparent=false, opacity=1, tile=false }){
+  // Tiles = tynde plader, ikke solide; blocks = 1x1x1 klodser
+  if (tile) {
+    return React.createElement('group',{position},
+      React.createElement('mesh',{castShadow:false,receiveShadow:true, userData:{isTile:true}},
+        React.createElement('boxGeometry',{args:[1,0.06,1]}),
+        React.createElement('meshStandardMaterial',{color,transparent,opacity})
+      )
+    );
+  }
   return React.createElement('group',{position},
     React.createElement('mesh',{castShadow:true,receiveShadow:true, userData:{isBlock:true}},
       React.createElement('boxGeometry',{args:[1,1,1]}),
@@ -91,11 +102,12 @@ function BlockCell({ position, color, transparent=false, opacity=1 }){
 function Blocks({ blocks }){
   const items = [...blocks.values()];
   return React.createElement('group',{name:"WorldBlocks"},
-    items.map(({pos, type}) => {
+    items.map(({pos, type, solid, tile}) => {
       const c = COLORS.find(k=>k.id===type) || COLORS[0];
       return React.createElement(BlockCell, {
-        key:`${pos[0]}|${pos[1]}|${pos[2]}`, position:pos,
-        color:c.color, transparent:!!c.transparent, opacity:c.opacity ?? 1
+        key:`${pos[0]}|${pos[1]}|${pos[2]}`,
+        position: tile ? [pos[0], 0.03, pos[2]] : pos,
+        color:c.color, transparent:!!c.transparent, opacity:c.opacity ?? 1, tile: !!tile
       });
     })
   );
@@ -111,15 +123,18 @@ function collidesAt(p, size, blocks){
   for (let x=minX; x<=maxX; x++){
     for (let y=minY; y<=maxY; y++){
       for (let z=minZ; z<=maxZ; z++){
-        if (y < 0) { if (y <= -1) return true; continue; } // gulv
-        if (blocks.has(`${x}|${y}|${z}`)) return true;
+        if (y < 0) { if (y <= -1) return true; continue; } // "under gulv" betragtes som solid
+        const cell = blocks.get(`${x}|${y}|${z}`);
+        if (!cell) continue;
+        if (cell.solid === false) continue; // tiles ignoreres
+        return true;
       }
     }
   }
   return false;
 }
-function tryStepUp(basePos, tryPos, size, blocks, maxStep=0.6){
-  const inc = 0.1;
+function tryStepUp(basePos, tryPos, size, blocks, maxStep=1.1){
+  const inc = 0.05;
   const stepped = { x: tryPos.x, y: basePos.y, z: tryPos.z };
   for (let h=inc; h<=maxStep+1e-6; h+=inc){
     stepped.y = basePos.y + h;
@@ -133,17 +148,17 @@ function snapToTop(pos, size, blocks){
   if (belowY < 0) { pos.y = 0 + size.y/2; return; }
   for (let dy=0; dy<=2; dy++){
     const y = belowY - dy;
-    if (blocks.has(`${cx}|${y}|${cz}`)){
+    const cell = blocks.get(`${cx}|${y}|${cz}`);
+    if (cell && cell.solid !== false){
       const top = y + 1 + size.y/2;
       if (pos.y < top + 0.12){ pos.y = top; }
       break;
     }
   }
 }
-function aabbVsBlocks(next, size, blocks, current, stepHeight=0.6){
+function aabbVsBlocks(next, size, blocks, current, stepHeight=1.1){
   const pos = { x: next.x, y: next.y, z: next.z };
 
-  // X
   let testX = { x: pos.x, y: current.y, z: pos.z };
   let steppedUp = false;
   if (collidesAt(testX, size, blocks)){
@@ -156,7 +171,6 @@ function aabbVsBlocks(next, size, blocks, current, stepHeight=0.6){
   }
   pos.x = testX.x; pos.y = testX.y; pos.z = testX.z;
 
-  // Z
   let testZ = { x: pos.x, y: pos.y, z: pos.z };
   if (collidesAt(testZ, size, blocks)){
     const stepped = tryStepUp({x:testZ.x,y:pos.y,z:testZ.z}, testZ, size, blocks, stepHeight);
@@ -168,7 +182,6 @@ function aabbVsBlocks(next, size, blocks, current, stepHeight=0.6){
   }
   pos.x = testZ.x; pos.y = testZ.y; pos.z = testZ.z;
 
-  // Y
   let testY = { x: pos.x, y: next.y, z: pos.z };
   if (collidesAt(testY, size, blocks)){
     const dir = Math.sign(testY.y - Math.round(testY.y)) || (testY.y >= current.y ? 1 : -1);
@@ -176,11 +189,10 @@ function aabbVsBlocks(next, size, blocks, current, stepHeight=0.6){
   }
   pos.y = testY.y;
 
-  // Snap lodret og centrer X/Z hvis vi lige er steppet op på en top → mindre “skub ud”
   snapToTop(pos, size, blocks);
   if (pos.y < size.y/2) pos.y = size.y/2;
+
   if (steppedUp || pos.y > current.y + 0.19) {
-    // center til nærmeste stud-center
     pos.x = Math.round(pos.x);
     pos.z = Math.round(pos.z);
   }
@@ -188,7 +200,7 @@ function aabbVsBlocks(next, size, blocks, current, stepHeight=0.6){
 }
 
 /* ------------------------------- Player -------------------------------- */
-function BatmanMinifig(){ // Kun én Batman (ingen prop-position; placeres af PlayerController)
+function BatmanMinifig(){
   const body = "#151515", cowl = "#0d0d0d", belt = "#f1c40f", gray = "#444";
   return React.createElement('group',null,
     React.createElement('mesh',{position:[ -0.15, 0.25, 0 ], castShadow:true}, React.createElement('boxGeometry',{args:[0.25,0.5,0.35]}), React.createElement('meshStandardMaterial',{color:gray})),
@@ -209,15 +221,25 @@ function PlayerController({ positionRef, blocks }){
   const onGround = useRef(true);
 
   useEffect(() => {
-    const onKeyDown = (e) => { setKey(e.key, true); };
+    const onKeyDown = (e) => {
+      const k = e.key.toLowerCase();
+      // Forhindr space/arrow/WASD i at "klikke" fokus-knapper
+      if ([" ", "space", "arrowup","arrowdown","arrowleft","arrowright","w","a","s","d"].includes(k)) {
+        e.preventDefault();
+      }
+      setKey(e.key, true);
+    };
     const onKeyUp = (e) => setKey(e.key, false);
-    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, { passive:false });
     window.addEventListener("keyup", onKeyUp);
-    return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
   }, []);
 
   useFrame((_, _dt) => {
-    const dt = Math.min(_dt, 1/60); // clamp
+    const dt = Math.min(_dt, 1/60);
     const speed = 3.8, jumpV = 6.4, gravity = 9.8;
 
     let forward = 0, strafe = 0;
@@ -242,7 +264,7 @@ function PlayerController({ positionRef, blocks }){
 
     const p = positionRef.current;
     const next = { x: p.x + v.x * dt, y: p.y + v.y * dt, z: p.z + v.z * dt };
-    const resolved = aabbVsBlocks(next, {x:0.6,y:1.7,z:0.6}, blocks, p, 0.7);
+    const resolved = aabbVsBlocks(next, {x:0.6,y:1.7,z:0.6}, blocks, p, 1.1);
 
     const wasFalling = v.y < 0;
     const landed = wasFalling && (resolved.y >= p.y) && Math.abs(resolved.y - p.y) < 0.06;
@@ -255,7 +277,6 @@ function PlayerController({ positionRef, blocks }){
       if (touching && v.y < 0) v.y = 0;
     }
 
-    // Lidt friktion når vi står på top → mindre kant-skub
     if (onGround.current){ v.x *= 0.85; v.z *= 0.85; }
 
     p.x = resolved.x; p.y = resolved.y; p.z = resolved.z;
@@ -297,18 +318,20 @@ function addBrickAt(base, brick, colorId, rot, blocks, bricks){
       const cz = Math.round(base.z) + dz;
       if (cy < 0) return false;
       const key = toKey(cx,cy,cz);
-      if (blocks.has(key)) return false;
+      const existing = blocks.get(key);
+      if (existing && existing.solid !== false) return false;   // blok optaget
       cells.push({cx,cy,cz,key});
     }
   }
-  for (const c of cells) blocks.set(c.key, { pos:[c.cx,c.cy,c.cz], type: colorId, brick:id });
+  // Erstat tiles (solid:false) med rigtige klodser (solid:true)
+  for (const c of cells) blocks.set(c.key, { pos:[c.cx,c.cy,c.cz], type: colorId, brick:id, solid:true, tile:false });
   bricks.set(id, cells.map(c=>c.key));
   return true;
 }
 function removeBrickAtCell(cx,cy,cz, blocks, bricks){
   const key = toKey(cx,cy,cz);
   const cell = blocks.get(key);
-  if (!cell) return false;
+  if (!cell || cell.solid === false) return false; // fjern kun ægte klodser
   const id = cell.brick;
   const list = bricks.get(id) || [];
   for (const k of list) blocks.delete(k);
@@ -316,17 +339,11 @@ function removeBrickAtCell(cx,cy,cz, blocks, bricks){
   return true;
 }
 
-/* -------- Raycast placer (med face normal → kan bygge ovenpå/sider) ----- */
+/* -------- Raycast placer (face normal → byg ovenpå/sider) -------------- */
 function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, getRot, worldRef }){
   const { camera } = useThree();
   const raycaster = useMemo(()=> new THREE.Raycaster(), []);
   const pointer = useMemo(()=> new THREE.Vector2(), []);
-  useEffect(() => {
-    const onContext = (e) => e.preventDefault();
-    const el = worldRef.current?.parent?.parent?.__r3f?.root?.gl?.domElement || document.querySelector("canvas");
-    el?.addEventListener("contextmenu", onContext);
-    return () => el?.removeEventListener("contextmenu", onContext);
-  }, [worldRef]);
 
   const cast = (clientX, clientY) => {
     const canvas = document.querySelector("canvas");
@@ -348,7 +365,6 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
 
     if (e.button === 2) { // fjern
       if (hits.length > 0) {
-        // gå op til nærmeste gruppe med position = cell
         let obj = hits[0].object;
         while (obj && !obj.parent?.position) obj = obj.parent;
         if (!obj) return;
@@ -367,8 +383,6 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
       const hit = hits[0];
       const faceN = hit.face?.normal?.clone() ?? new THREE.Vector3(0,1,0);
       const nrm = faceN.applyMatrix3(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld)).normalize();
-
-      // placér på cellen ved at flytte 0.5 i normal-retning og snappe til grid
       const place = hit.point.clone().add(nrm.multiplyScalar(0.5)).floor().addScalar(0.5);
       const base = { x: Math.round(place.x), y: Math.round(place.y), z: Math.round(place.z) };
 
@@ -380,7 +394,7 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
       return;
     }
 
-    // fallback: ramte kun jorden (y=0 plane)
+    // fallback: jorden (læg første klods i y=1 så den er ovenpå planet)
     const canvas = document.querySelector("canvas");
     const rect = canvas.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -390,7 +404,7 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
     const p = new THREE.Vector3();
     raycaster.ray.intersectPlane(plane, p);
     if (p) {
-      const base = { x: Math.round(p.x), y: 0, z: Math.round(p.z) };
+      const base = { x: Math.round(p.x), y: 1, z: Math.round(p.z) };
       setBlocks(prev => {
         const nb = new Map(prev);
         addBrickAt(base, brick, colorId, rot, nb, bricks);
@@ -401,8 +415,13 @@ function RaycastPlacer({ mode, blocks, setBlocks, bricks, getColor, getBrick, ge
 
   useEffect(() => {
     const canvas = document.querySelector("canvas");
+    const onContext = (ev) => ev.preventDefault();
     canvas?.addEventListener("mousedown", handlePointerDown);
-    return () => canvas?.removeEventListener("mousedown", handlePointerDown);
+    canvas?.addEventListener("contextmenu", onContext);
+    return () => {
+      canvas?.removeEventListener("mousedown", handlePointerDown);
+      canvas?.removeEventListener("contextmenu", onContext);
+    };
   }, [mode, worldRef, getColor, getBrick, getRot]);
 
   return null;
@@ -415,7 +434,7 @@ function ColorHotbar({ colors, selected, onSelect }){
       key:c.id, className:`dot ${i===selected?'active':''}`,
       onClick:()=>onSelect(i),
       title:c.label,
-      style:{ background: c.color, opacity: c.opacity ?? 1 }
+      style:{ width:28, height:28, borderRadius:999, border:"2px solid rgba(255,255,255,.4)", background:c.color, opacity:c.opacity ?? 1, cursor:"pointer" }
     }))
   );
 }
@@ -429,19 +448,23 @@ function BrickPreviewSVG({ w, l }) {
   );
 }
 function Sidebar({ open, setOpen, bricks, selectedBrick, onSelectBrick }){
-  return open ? React.createElement('div',{className:'sidebar'},
+  return open ? React.createElement('div',{className:'sidebar', style:{
+    position:"absolute", top:0, left:0, height:"100%", width:320, background:"rgba(24,24,27,.92)", color:"#fff",
+    padding:16, overflowY:"auto", backdropFilter:"blur(6px)", boxShadow:"0 0 24px rgba(0,0,0,.5)", borderRight:"1px solid rgba(255,255,255,.08)"
+  }},
     React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
-      React.createElement('h2',{style:{fontSize:16,fontWeight:600}},'Klodser'),
-      React.createElement('button',{className:'button',onClick:()=>setOpen(false)},'Luk (B)')
+      React.createElement('h2',{style:{fontSize:16,fontWeight:600, margin:0}},'Klodser'),
+      React.createElement('button',{className:'button', tabIndex:-1, onMouseDown:(e)=>e.preventDefault(), onClick:()=>setOpen(false)},'Luk (B)')
     ),
-    React.createElement('div',{className:'bricklist'},
+    React.createElement('div',{className:'bricklist', style:{display:"grid", gridTemplateColumns:"1fr", gap:10}},
       bricks.map(b => React.createElement('div',{
-        key:b.id, className:`brick-item ${selectedBrick===b.id?'active':''}`, onClick:()=>onSelectBrick(b.id)
+        key:b.id, className:`brick-item ${selectedBrick===b.id?'active':''}`, onClick:()=>onSelectBrick(b.id),
+        style:{display:"flex",alignItems:"center",gap:12, background:"rgba(255,255,255,.05)", padding:10, borderRadius:12, border:"1px solid rgba(255,255,255,.1)", cursor:"pointer", outline: selectedBrick===b.id ? "2px solid #fff" : "none"}
       },
-        React.createElement('div',{className:'brick-preview'}, React.createElement(BrickPreviewSVG,{w:b.w, l:b.l})),
+        React.createElement('div',{className:'brick-preview', style:{width:84,height:48,borderRadius:10, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", display:"grid", placeItems:"center"}}, React.createElement(BrickPreviewSVG,{w:b.w, l:b.l})),
         React.createElement('div',null,
           React.createElement('div',{style:{fontWeight:600}}, b.id),
-          React.createElement('div',{className:'pill', style:{marginTop:6}}, `${b.w}×${b.l} studs`)
+          React.createElement('div',{style:{marginTop:6, padding:"6px 10px", borderRadius:999, border:"1px solid rgba(255,255,255,.25)", background:"rgba(255,255,255,.08)"}}, `${b.w}×${b.l} studs`)
         )
       ))
     ),
@@ -457,24 +480,34 @@ function TouchControls(){
     onMouseDown:(e)=>{ e.preventDefault(); press(code,true); },
     onMouseUp:(e)=>{ e.preventDefault(); press(code,false); },
   });
-  return React.createElement('div',{className:'touch-controls touch-hide-desktop'},
-    React.createElement('div',{className:'dpad'},
-      React.createElement('div',{className:'arrow up btn',    ...bind("ArrowUp")},    "▲"),
-      React.createElement('div',{className:'arrow down btn',  ...bind("ArrowDown")},  "▼"),
-      React.createElement('div',{className:'arrow left btn',  ...bind("ArrowLeft")},  "◀"),
-      React.createElement('div',{className:'arrow right btn', ...bind("ArrowRight")}, "▶"),
+  return React.createElement('div',{className:'touch-controls', style:{position:"absolute", right:16, bottom:16, display:"flex", gap:10, alignItems:"flex-end"}},
+    React.createElement('div',{className:'dpad', style:{width:140, height:140, position:"relative"}},
+      React.createElement('div',{className:'arrow up btn',    ...bind("ArrowUp"),    style:btnStyle(42,0)}, "▲"),
+      React.createElement('div',{className:'arrow down btn',  ...bind("ArrowDown"),  style:btnStyle(42,84)}, "▼"),
+      React.createElement('div',{className:'arrow left btn',  ...bind("ArrowLeft"),  style:btnStyle(0,42)}, "◀"),
+      React.createElement('div',{className:'arrow right btn', ...bind("ArrowRight"), style:btnStyle(84,42)}, "▶"),
     ),
-    React.createElement('div',{className:'jump btn', ...bind(" ")}, "HOP")
+    React.createElement('div',{className:'jump btn', ...bind(" "), style:{
+      width:88, height:88, borderRadius:18, background:"rgba(255,255,255,.1)", border:"1px solid rgba(255,255,255,.3)", display:"grid", placeItems:"center", fontWeight:700, userSelect:"none"
+    }}, "HOP")
   );
+}
+function btnStyle(left, top){
+  return {
+    position:"absolute", left, top, width:56, height:56,
+    background:"rgba(255,255,255,.08)", border:"1px solid rgba(255,255,255,.25)",
+    borderRadius:12, display:"grid", placeItems:"center", fontSize:20, userSelect:"none", cursor:"pointer"
+  };
 }
 
 /* --------------------------------- App --------------------------------- */
 function App(){
   const [blocks, setBlocks] = useState(() => {
     const m = new Map();
-    // basefliser ved y=0
-    for (let x=-12; x<=12; x++) for (let z=-12; z<=12; z++)
-      m.set(`${x}|0|${z}`, { pos:[x,0,z], type: (x+z)%2===0?"darkgray":"lightgray", brick: 0 });
+    // Base: dekorative tiles ved y=0 (ikke solide; renderes som tynde plader)
+    for (let x=-12; x<=12; x++) for (let z=-12; z<=12; z++){
+      m.set(`${x}|0|${z}`, { pos:[x,0,z], type: (x+z)%2===0?"darkgray":"lightgray", brick: -1, solid:false, tile:true });
+    }
     return m;
   });
   const bricks = useMemo(()=> new Map(), []);
@@ -486,19 +519,21 @@ function App(){
   const [mode, setMode] = useState("build");
   const [theme, setTheme] = useState("night");
 
-  const worldRef = useRef(); // alle blokke i én gruppe
-  const playerPos = useRef(vec3(0,0.5,6));
+  const worldRef = useRef();
+  // Start en anelse højere (ingen start-kontakt) → ingen flicker
+  const playerPos = useRef(vec3(0,1.1,6));
 
   useEffect(() => {
     const onKey = (e) => {
       const k = e.key.toLowerCase();
+      if ([" ", "space", "arrowup","arrowdown","arrowleft","arrowright","w","a","s","d"].includes(k)) e.preventDefault();
       if (k === "b") setSidebarOpen(v => !v);
       if (k === "q") setMode(m => m === "build" ? "gadget" : "build");
       if (k === "r") setBrickRot(r => 1 - r);
       const n = parseInt(k, 10);
       if (!isNaN(n) && n >= 1 && n <= COLORS.length) setColorIndex(n-1);
     };
-    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, { passive:false });
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
@@ -509,7 +544,9 @@ function App(){
   const [showHelp, setShowHelp] = useState(true);
   useEffect(() => { const t = setTimeout(()=>setShowHelp(false), 6000); return () => clearTimeout(t); }, []);
 
-  return React.createElement('div',{style:{width:"100%",height:"100%",position:"relative",background:"#000"}},
+  const btnPropsNoFocus = { tabIndex:-1, onMouseDown:(e)=>e.preventDefault() };
+
+  return React.createElement('div',{style:{width:"100%",height:"100%",position:"relative",background:"#000", color:"#fff", fontFamily:"system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"}},
     React.createElement(Canvas, {
       shadows:true,
       camera:{ position:[0,2,8], fov:60 },
@@ -531,29 +568,44 @@ function App(){
       React.createElement(RaycastPlacer,{ mode, blocks, setBlocks, bricks, getColor, getBrick, getRot, worldRef })
     ),
 
-    React.createElement('div',{className:'crosshair'}),
-
-    React.createElement('div',{className:'topbar-left'},
-      React.createElement('button',{className:'button', onClick:()=>setSidebarOpen(v=>!v)}, sidebarOpen?"Skjul":"Klodser (B)"),
-      React.createElement('button',{className:'button', onClick:()=>setMode(m=>m==="build"?"gadget":"build")}, `Tilstand: ${mode==="build"?"Byg":"Gadget"} (Q)`),
-      React.createElement('button',{className:'button', onClick:()=>setBrickRot(r=>1-r)}, `Rotation (R): ${brickRot? "90°":"0°"}`)
-    ),
-    React.createElement('div',{className:'topbar-right'},
-      React.createElement('button',{className:`toggle ${theme==="day"?"active":""}`, onClick:()=>setTheme(t=>t==="day"?"night":"day")}, theme==="day"?"☀️ Dag":"🌙 Nat"),
-      React.createElement('div',{className:'title', style:{marginLeft:8, textAlign:'right'}},
-        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Safe v8'),
+    // HUD + version
+    React.createElement('div',{style:{position:"absolute", top:16, right:16, display:"flex", gap:8, alignItems:"center"}},
+      React.createElement('button',{className:'toggle', ...btnPropsNoFocus, onClick:()=>setTheme(t=>t==="day"?"night":"day"),
+        style:toggleStyle(theme==="day")}, theme==="day"?"☀️ Dag":"🌙 Nat"),
+      React.createElement('div',{style:{textAlign:'right'}},
+        React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Safe v10'),
         React.createElement('div',{style:{color:"#fff", fontSize:16, fontWeight:600}},'LEGO Batman – Voxel Builder')
       )
     ),
 
-    showHelp && React.createElement('div',{className:'hint'},
-      'WASD/Pile: Bevæg • Space/HOP • B: Sidebar • 1–9: Farve • R: Roter • Q: Byg/Gadget • Venstreklik: byg • Højreklik: fjern'
+    React.createElement('div',{style:{position:"absolute", top:16, left:16, display:"flex", gap:8, flexWrap:"wrap"}},
+      React.createElement('button',{className:'button', ...btnPropsNoFocus, onClick:()=>setSidebarOpen(v=>!v), style:btnU()},
+        sidebarOpen?"Skjul":"Klodser (B)"),
+      React.createElement('button',{className:'button', ...btnPropsNoFocus, onClick:()=>setMode(m=>m==="build"?"gadget":"build"), style:btnU()},
+        `Tilstand: ${mode==="build"?"Byg":"Gadget"} (Q)`),
+      React.createElement('button',{className:'button', ...btnPropsNoFocus, onClick:()=>setBrickRot(r=>1-r), style:btnU()},
+        `Rotation (R): ${brickRot? "90°":"0°"}`)
     ),
 
+    React.createElement('div',{style:{position:"absolute", left:"50%", transform:"translateX(-50%)", bottom:16, display:"flex", gap:8, padding:10, borderRadius:16, background:"rgba(0,0,0,0.35)", backdropFilter:"blur(6px)"}},
+      React.createElement(ColorHotbar,{ colors:COLORS, selected:colorIndex, onSelect:setColorIndex })
+    ),
+
+    React.createElement('div',{style:{position:"absolute", left:"50%", top:"50%", transform:"translate(-50%,-50%)", width:16, height:16, borderRadius:999, border:"1px solid rgba(255,255,255,0.7)", pointerEvents:"none"}}),
+
     React.createElement(Sidebar,{ open:sidebarOpen, setOpen:setSidebarOpen, bricks:BRICKS, selectedBrick, onSelectBrick:setSelectedBrick }),
-    React.createElement(ColorHotbar,{ colors:COLORS, selected:colorIndex, onSelect:setColorIndex }),
-    React.createElement(TouchControls,null)
+    React.createElement(TouchControls,null),
+
+    showHelp && React.createElement('div',{style:{position:"absolute", top:16, left:"50%", transform:"translateX(-50%)", background:"rgba(0,0,0,.5)", padding:"8px 12px", borderRadius:12, fontSize:13}},
+      'WASD/Pile: Bevæg • Space/HOP • B: Sidebar • 1–9: Farve • R: Roter • Q: Byg/Gadget • Venstreklik: byg • Højreklik: fjern'
+    )
   );
+}
+function toggleStyle(active){
+  return { padding:"6px 10px", borderRadius:10, border:"1px solid rgba(255,255,255,.25)", background:"rgba(255,255,255,.08)", cursor:"pointer", outline: active ? "2px solid #fff" : "none" };
+}
+function btnU(){
+  return { padding:"8px 12px", borderRadius:12, background:"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.2)", color:"#fff", cursor:"pointer" };
 }
 
 /* ------------------------------ Mount app ------------------------------ */
