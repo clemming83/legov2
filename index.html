@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LEGO Batman – Voxel Builder (Deluxe, CDN+Fallback)</title>
+    <title>LEGO Batman – Voxel Builder (Deluxe)</title>
     <style>
       html, body, #root { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#000; color:#fff; }
       .button { padding:8px 12px; border-radius:12px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.2); color:white; cursor:pointer; }
@@ -16,81 +16,32 @@
       .palette-item { display:flex; gap:8px; align-items:center; background:rgba(255,255,255,.05); padding:8px; border-radius:12px; border:1px solid rgba(255,255,255,.1); }
       .hint { position:absolute; top:16px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,.5); padding:8px 12px; border-radius:12px; font-size:13px; }
       #err { position: absolute; bottom: 10px; left: 10px; right: 10px; background: rgba(255,0,0,.15); color:#fff; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; padding: 8px; border-radius: 8px; display:none; white-space: pre-wrap;}
+      #ok  { position: absolute; top:10px; left:10px; background: rgba(0,255,127,.15); color:#b7ffcf; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 6px 10px; border-radius: 8px; font-size: 12px; }
     </style>
   </head>
   <body>
     <div id="root"></div>
     <div id="err"></div>
-<script type="module">
-  // Pinned, bundled CDN imports (esm.sh)
-  import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
-  import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
-  import * as THREE from "https://esm.sh/three@0.160.0";
+    <div id="ok" style="display:none">Loaded OK</div>
 
-  // Bundle + deps = undgå dynamiske peer-imports i browseren
-  import { Canvas, useFrame, useThree } from "https://esm.sh/@react-three/fiber@8.15.16?bundle&deps=react@18.3.1,react-dom@18.3.1,three@0.160.0";
-  import { Sky, Stars, PointerLockControls } from "https://esm.sh/@react-three/drei@9.92.7?bundle&deps=react@18.3.1,react-dom@18.3.1,three@0.160.0,@react-three/fiber@8.15.16";
-  import { motion as Motion, AnimatePresence } from "https://esm.sh/framer-motion@11.0.0";
+    <script>
+      const showErr = (msg) => { const el = document.getElementById('err'); el.style.display = 'block'; el.textContent = msg; };
+      const showOk  = () => { document.getElementById('ok').style.display = 'inline-block'; };
+      window.addEventListener('error', e => showErr(String(e.error || e.message || e)));
+      window.addEventListener('unhandledrejection', e => showErr(String(e.reason || e)));
+    </script>
 
-  // --------- DIN EKSISTERENDE SPILKODE FORTSÆTTER HERUNDER ---------
-  // (bevar resten af din kode uændret: utils, Ground, Blocks, BatmanMinifig,
-  //  collision, PlayerController, FollowCamera3P, RaycastPlacer, useBatarangs,
-  //  BatarangMeshes, Hotbar, Sidebar, App, og createRoot(...).render(...))
-</script>
-
-    <!-- Loader med CDN-fallback -->
     <script type="module">
-      const cdn = {
-        react: [
-          "https://esm.sh/react@18.3.1",
-          "https://cdn.skypack.dev/react@18.3.1"       // fallback
-        ],
-        reactDom: [
-          "https://esm.sh/react-dom@18.3.1/client",
-          "https://cdn.skypack.dev/react-dom@18.3.1/client"
-        ],
-        three: [
-          "https://esm.sh/three@0.160.0",
-          "https://unpkg.com/three@0.160.0/build/three.module.js"
-        ],
-        fiber: [
-          "https://esm.sh/@react-three/fiber@8.15.16",
-          "https://cdn.skypack.dev/@react-three/fiber@8.15.16"
-        ],
-        drei: [
-          "https://esm.sh/@react-three/drei@9.92.7",
-          "https://cdn.skypack.dev/@react-three/drei@9.92.7"
-        ],
-        motion: [
-          "https://esm.sh/framer-motion@11.0.0",
-          "https://cdn.skypack.dev/framer-motion@11.0.0"
-        ],
-      };
+      // Pinned & BUNDLED imports (ens three/fiber/drei/framer-motion/React spilles sammen)
+      import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
+      import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
+      import * as THREE from "https://esm.sh/three@0.160.0";
 
-      async function tryImport(urls) {
-        let lastErr;
-        for (const u of urls) {
-          try { return await import(u); } catch (e) { lastErr = e; }
-        }
-        throw lastErr;
-      }
+      import { Canvas, useFrame, useThree } from "https://esm.sh/@react-three/fiber@8.15.16?bundle&deps=react@18.3.1,react-dom@18.3.1,three@0.160.0";
+      import { Sky, Stars, PointerLockControls } from "https://esm.sh/@react-three/drei@9.92.7?bundle&deps=react@18.3.1,react-dom@18.3.1,three@0.160.0,@react-three/fiber@8.15.16";
+      import { motion as Motion, AnimatePresence } from "https://esm.sh/framer-motion@11.0.0";
 
-      const [React, ReactDOMClient, THREE, fiber, drei, motion] = await Promise.all([
-        tryImport(cdn.react),
-        tryImport(cdn.reactDom),
-        tryImport(cdn.three),
-        tryImport(cdn.fiber),
-        tryImport(cdn.drei),
-        tryImport(cdn.motion),
-      ]);
-
-      const { useEffect, useMemo, useRef, useState } = React;
-      const { createRoot } = ReactDOMClient;
-      const { Canvas, useFrame, useThree } = fiber;
-      const { Sky, Stars, PointerLockControls } = drei;
-      const { motion: Motion, AnimatePresence } = motion;
-
-      // ---------- Utils ----------
+      // ——— Utils
       const keyState = new Map();
       const setKey = (code, down) => keyState.set(code.toLowerCase(), down);
       const isDown = (code) => keyState.get(code.toLowerCase()) === true;
@@ -108,7 +59,7 @@
       ];
       const DEFAULT_HOTBAR = ["black","darkgray","lightgray","yellow","blue","purple","transparent","black","yellow"];
 
-      // ---------- 3D ----------
+      // ——— 3D
       function Ground({ size = 200 }) {
         const { scene } = useThree();
         useEffect(() => { scene.fog = null; }, [scene]);
@@ -161,7 +112,7 @@
         );
       }
 
-      // ---------- Collision ----------
+      // ——— Collision
       let currentYaw = 0;
       function aabbVsBlocks(next, size, blocks){
         const half = { x: size.x/2, y: size.y/2, z: size.z/2 };
@@ -200,12 +151,11 @@
         return pos;
       }
 
-      // ---------- Player ----------
+      // ——— Player
       function PlayerController({ positionRef, blocks, firstPerson, cameraRef }){
         const ref = useRef(null);
         const vel = useRef(vec3(0,0,0));
         const onGround = useRef(true);
-
         useEffect(() => {
           const onKeyDown = (e) => {
             if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," ","w","a","s","d","b","1","2","3","4","5","6","7","8","9","f1","q","e"].includes(e.key.toLowerCase()) || e.key === " ") {
@@ -274,7 +224,7 @@
         return null;
       }
 
-      // ---------- Build & Gadget ----------
+      // ——— Build & Gadget
       function RaycastPlacer({ mode, blocks, setBlocks, getSelected, cameraRef }){
         const { camera, gl, scene } = useThree();
         const raycaster = useMemo(()=> new THREE.Raycaster(), []);
@@ -342,7 +292,7 @@
         return null;
       }
 
-      // ---------- Batarang ----------
+      // ——— Batarang
       let BAT_ID = 1;
       function useBatarangs(blocks, setBlocks, cameraRef){
         const [bats, setBats] = useState([]);
@@ -392,7 +342,7 @@
         );
       }
 
-      // ---------- UI ----------
+      // ——— UI
       function Hotbar({ hotbar, selected, setSelected }){
         useEffect(() => {
           const onKey = (e) => { const n = parseInt(e.key, 10); if (!isNaN(n) && n >= 1 && n <= 9) setSelected(n-1); };
@@ -439,7 +389,7 @@
         );
       }
 
-      // ---------- App ----------
+      // ——— App
       function App(){
         const [blocks, setBlocks] = useState(() => {
           const m = new Map();
@@ -447,7 +397,7 @@
           for (let y=1; y<4; y++) m.set(`2|${y}|2`, { pos:[2,y,2], type: "yellow" });
           return m;
         });
-        const [hotbar, setHotbar] = useState([...DEFAULT_HOTBAR]);
+        const [hotbar] = useState([...DEFAULT_HOTBAR]);
         const [selected, setSelected] = useState(0);
         const [sidebarOpen, setSidebarOpen] = useState(true);
         const [mode, setMode] = useState("build");
@@ -467,6 +417,8 @@
           window.addEventListener("keydown", onKey);
           return () => window.removeEventListener("keydown", onKey);
         }, []);
+
+        useEffect(()=>{ showOk(); }, []); // <- badge øverst: React mountet
 
         return React.createElement('div',{style:{width:"100%",height:"100%",position:"relative",background:"#000"}},
           React.createElement(Canvas, { shadows:true, camera:{ position:[0,2,8], fov:60 }, onCreated:({camera})=>{ (cameraRef).current = camera; } },
@@ -501,7 +453,7 @@
           ),
           React.createElement(Sidebar,{open:sidebarOpen, setOpen:setSidebarOpen}),
           React.createElement('div',{className:'title'},
-            React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Deluxe (CDN + Fallback)'),
+            React.createElement('div',{style:{color:"rgba(255,255,255,.8)",fontSize:12}},'Deluxe (CDN, pinned bundled)'),
             React.createElement('div',{style:{color:"#fff", fontSize:18, fontWeight:600}},'LEGO Batman – Voxel Builder')
           )
         );
