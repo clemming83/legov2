@@ -36,9 +36,8 @@
       import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
       import * as THREE from "https://esm.sh/three@0.160.0";
       import { Canvas, useFrame, useThree } from "https://esm.sh/@react-three/fiber@8.15.16?bundle&deps=react@18.3.1,react-dom@18.3.1,three@0.160.0";
-      import { Sky, Stars, PointerLockControls } from "https://esm.sh/@react-three/drei@9.92.7?bundle&deps=react@18.3.1,react-dom@18.3.1,three@0.160.0,@react-three/fiber@8.15.16";
       import { motion as Motion, AnimatePresence } from "https://esm.sh/framer-motion@11.0.0";
-
+      import { Sky, Stars, PointerLockControls } from "https://esm.sh/@react-three/drei@9.92.7?deps=react@18.3.1,react-dom@18.3.1,three@0.160.0";
       // ---------- Utils ----------
       const keyState = new Map();
       const setKey = (code, down) => keyState.set(code.toLowerCase(), down);
