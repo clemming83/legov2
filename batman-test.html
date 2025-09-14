@@ -2,7 +2,7 @@
 <html lang="da">
 <head>
   <meta charset="utf-8" />
-  <title>Batman Playtest v4 – løb + hop + arme/ben i luften</title>
+  <title>Batman Playtest v5 – korrekte pivots + grupperede arme</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     html, body { height:100%; margin:0; background:#0b0d11; color:#fff; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
@@ -11,11 +11,10 @@
     #error pre{white-space:pre-wrap; word-break:break-word; background:#111; padding:12px; border:1px solid #333; border-radius:8px}
     .hud { position:fixed; inset:auto 12px 12px auto; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.2); padding:6px 10px; border-radius:10px; font-size:12px; }
     .topbadge { position:fixed; top:12px; right:12px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.2); padding:6px 10px; border-radius:10px; font-size:12px; }
-    a { color:#8bb7ff; }
   </style>
 </head>
 <body>
-  <div class="topbadge">Batman Playtest v4</div>
+  <div class="topbadge">Batman Playtest v5</div>
   <div class="hud">WASD / Piletaster: Bevæg • Shift: Sprint • <b>Space: Hop</b> • Mus: Orbit/Zoom</div>
   <div id="error"><h3>⚠️ Fejl</h3><div id="em"></div><pre id="es"></pre></div>
 
@@ -107,19 +106,23 @@
     scene.add(batmanRoot);
 
     const hip = new THREE.Group();       // hofte (hele krop bobber + bærer OBJ)
-    const legPivotL = new THREE.Group(); // backup, hvis vi ikke finder benmeshes
-    const legPivotR = new THREE.Group();
     hip.position.set(0, 0.0, 0);
     batmanRoot.add(hip);
-    hip.add(legPivotL, legPivotR);
 
-    // references til ben/arme/hænder
-    const legMeshesL = [];
-    const legMeshesR = [];
-    const armMeshesL = [];
-    const handMeshesL = [];
-    const armMeshesR = [];
-    const handMeshesR = [];
+    // references til ben/arme/hænder (meshes)
+    let meshLegL=null, meshLegR=null, meshArmL=null, meshHandL=null, meshArmR=null, meshHandR=null;
+
+    // pivot-grupper (vi roterer disse)
+    const legPivotL = new THREE.Group();
+    const legPivotR = new THREE.Group();
+    const armPivotL = new THREE.Group();
+    const armPivotR = new THREE.Group();
+
+    // vi opbevarer også alle pivots i arrays for nem rotation
+    const legPivotsL = [legPivotL];
+    const legPivotsR = [legPivotR];
+    const armPivotsL = [armPivotL];
+    const armPivotsR = [armPivotR];
 
     function pbrifyMaterials(mtl){
       Object.values(mtl.materials || {}).forEach(mat=>{
@@ -133,22 +136,45 @@
         if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; }
       });
     }
-    function collectLimbMeshes(obj){
+    function findMeshes(obj){
       obj.traverse(node=>{
         if (!node.isMesh) return;
         const n = (node.name || "");
-
-        // EXAKT navne fra Blender:
-        if (n === "Part.6")  legMeshesL.push(node); // venstre ben
-        if (n === "Part.7")  legMeshesR.push(node); // højre ben
-        if (n === "Part.11") armMeshesL.push(node); // venstre arm
-        if (n === "Part.12") handMeshesL.push(node);// venstre hånd
-        if (n === "Part.9")  armMeshesR.push(node); // højre arm
-        if (n === "Part.10") handMeshesR.push(node);// højre hånd
+        if (n === "Part.6")  meshLegL  = node; // venstre ben
+        if (n === "Part.7")  meshLegR  = node; // højre ben
+        if (n === "Part.11") meshArmL  = node; // venstre arm
+        if (n === "Part.12") meshHandL = node; // venstre hånd
+        if (n === "Part.9")  meshArmR  = node; // højre arm
+        if (n === "Part.10") meshHandR = node; // højre hånd
       });
-      console.log("[Leg detection] L:", legMeshesL.map(m=>m.name), "R:", legMeshesR.map(m=>m.name));
-      console.log("[Arm detection] L:", armMeshesL.map(m=>m.name), "R:", armMeshesR.map(m=>m.name));
-      console.log("[Hand detection] L:", handMeshesL.map(m=>m.name), "R:", handMeshesR.map(m=>m.name));
+      console.log("[Found] LegL:", meshLegL?.name, "LegR:", meshLegR?.name,
+                  "ArmL:", meshArmL?.name, "HandL:", meshHandL?.name,
+                  "ArmR:", meshArmR?.name, "HandR:", meshHandR?.name);
+    }
+
+    // Lav en pivot i WORLD ved (mesh top-center) og attach både arm+hand (eller ben)
+    function makePivotAtTop(mesh, alsoAttach = []) {
+      if (!mesh) return null;
+      mesh.geometry.computeBoundingBox?.();
+      const bb = mesh.geometry.boundingBox;
+      if (!bb) return null;
+      const center = new THREE.Vector3();
+      bb.getCenter(center);
+      const topLocal = new THREE.Vector3(center.x, bb.max.y, center.z);
+      const topWorld = mesh.localToWorld(topLocal.clone());
+
+      const pivot = new THREE.Group();
+      const parent = mesh.parent;
+      parent.add(pivot);
+      pivot.position.copy(topWorld);
+      pivot.updateMatrixWorld();
+
+      // reparent så world-transform bevares:
+      pivot.attach(mesh);
+      for (const child of alsoAttach) {
+        if (child) pivot.attach(child);
+      }
+      return pivot;
     }
 
     mtlLoader.load(
@@ -182,10 +208,28 @@
                 // put hele mesh under hofte
                 hip.add(obj);
 
-                // find ben/arme/hænder
-                collectLimbMeshes(obj);
+                // find relevante meshes
+                findMeshes(obj);
 
-                console.log("[Batman] OBJ+MTL loaded OK");
+                // BYG PIVOTS:
+                // 1) Ben: pivot i top-center (hofte)
+                const lp = makePivotAtTop(meshLegL);
+                const rp = makePivotAtTop(meshLegR);
+                if (lp) hip.add(legPivotL); // flyt vores styre-pivot til samme world som lp og attach lp under den?
+                if (rp) hip.add(legPivotR);
+
+                // Nem variant: brug lp/rp direkte som pivots at rotere:
+                // (vi beholder lokale arrays men peger dem på lp/rp)
+                if (lp) { legPivotsL.length = 0; legPivotsL.push(lp); }
+                if (rp) { legPivotsR.length = 0; legPivotsR.push(rp); }
+
+                // 2) Arme: pivot i top-center (skulder) og attach hånd sammen med arm
+                const alp = makePivotAtTop(meshArmL, [meshHandL]);
+                const arp = makePivotAtTop(meshArmR, [meshHandR]);
+                if (alp) { armPivotsL.length = 0; armPivotsL.push(alp); }
+                if (arp) { armPivotsR.length = 0; armPivotsR.push(arp); }
+
+                console.log("[Batman] OBJ+MTL loaded OK (pivots built)");
               } catch (e) {
                 showErr("Batman model post-process fejlede", e.stack);
               } finally {
@@ -218,7 +262,7 @@
       gravity: -18.0,
       jumpVel: 7.6,
       onGround: true,
-      airTime: 0     // hvor længe vi har været i luften (til animation blending)
+      airTime: 0
     };
 
     function inputDir(){
@@ -229,7 +273,6 @@
       if (keys.get("d") || keys.get("arrowright")) s += 1;
       const v = new THREE.Vector3(s, 0, -f);
       if (v.lengthSq()>0) v.normalize();
-
       // bevægelse i forhold til kameraets yaw
       const camYaw = Math.atan2(camera.position.x - controls.target.x, camera.position.z - controls.target.z);
       v.applyAxisAngle(new THREE.Vector3(0,1,0), camYaw);
@@ -240,64 +283,47 @@
     let walkPhase = 0;
 
     function animateCharacter(dt, planarSpeed){
-      // onGround / airborne
       const moving = planarSpeed > 0.08;
       const airborne = !state.onGround;
 
-      // --- hofte-bob (ingen bob i luften) ---
+      // hofte-bob (ingen bob i luften)
       const bobAmp = 0.03;
       const bob = (!airborne && moving) ? Math.abs(Math.sin(walkPhase*1.6)) * bobAmp : 0.0;
       hip.position.y = THREE.MathUtils.lerp(hip.position.y, bob, 1 - Math.exp(-10 * dt));
 
-      // --- ben ---
-      const legL = legMeshesL.length ? legMeshesL : [legPivotL];
-      const legR = legMeshesR.length ? legMeshesR : [legPivotR];
-
-      let leftTarget = 0, rightTarget = 0;
+      // -------- BEN ----------
+      let leftTargetX = 0, rightTargetX = 0;
       if (airborne) {
-        // Splay i luften: ben ud til hver sin side (brug rotations-akse X for frem/tilbage ben-sving)
-        // Vi kan også tilføje en let Z-rotation for "sprede effekt" – men hold os til X for simplicity.
-        // Maks spredning:
         const splayMax = 0.95;
-        // Saml benene igen tæt på landing (når vi er lavt og falder)
-        const nearGround = Math.min(1, Math.max(0, 1 - state.y / 0.6)); // 0 når højt oppe, → 1 tæt på jorden
+        const nearGround = Math.min(1, Math.max(0, 1 - state.y / 0.6));
         const falling = state.vy < -0.1 ? 1 : 0;
-        const gather = Math.min(1, (nearGround * 0.8 + falling * 0.2)); // mere samling under fald tæt på jord
-        const splay = splayMax * (1 - 0.85 * gather); // reducer splay når vi nærmer os landing
-
-        leftTarget  =  splay;
-        rightTarget = -splay;
-
+        const gather = Math.min(1, (nearGround * 0.8 + falling * 0.2));
+        const splay = splayMax * (1 - 0.85 * gather);
+        leftTargetX  =  splay;   // frem
+        rightTargetX = -splay;   // tilbage
       } else {
-        // Gå-swing
         const ampMax = 0.7;
         const amp = moving ? Math.min(1, planarSpeed / state.speedRun) * ampMax : 0.0;
-        leftTarget  = Math.sin(walkPhase) * amp;
-        rightTarget = -leftTarget;
+        leftTargetX  = Math.sin(walkPhase) * amp;
+        rightTargetX = -leftTargetX;
       }
+      const kLeg = 1 - Math.exp(-16 * dt);
+      for (const p of legPivotsL) p.rotation.x = THREE.MathUtils.lerp(p.rotation.x, leftTargetX,  kLeg);
+      for (const p of legPivotsR) p.rotation.x = THREE.MathUtils.lerp(p.rotation.x, rightTargetX, kLeg);
 
-      const kLeg = 1 - Math.exp(-16 * dt); // smoothing
-      for (const m of legL) m.rotation.x = THREE.MathUtils.lerp(m.rotation.x, leftTarget,  kLeg);
-      for (const m of legR) m.rotation.x = THREE.MathUtils.lerp(m.rotation.x, rightTarget, kLeg);
-
-      // --- arme + hænder i luften ---
-      // Armene løftes ved hop; på jorden glider de tilbage mod neutral.
+      // -------- ARME ----------
       let armTargetX = 0, handTargetX = 0;
       if (airborne) {
-        armTargetX  = -1.05; // løft armene frem/opf
-        handTargetX = -0.25; // hænder følger lidt
-      } else {
-        armTargetX  = 0.0;
-        handTargetX = 0.0;
+        armTargetX  = -1.05; // løft armene (frem/opf)
+        handTargetX = -0.25;
       }
-
       const kArm = 1 - Math.exp(-14 * dt);
-      for (const m of armMeshesL)  m.rotation.x = THREE.MathUtils.lerp(m.rotation.x, armTargetX,  kArm);
-      for (const m of armMeshesR)  m.rotation.x = THREE.MathUtils.lerp(m.rotation.x, armTargetX,  kArm);
-      for (const m of handMeshesL) m.rotation.x = THREE.MathUtils.lerp(m.rotation.x, handTargetX, kArm);
-      for (const m of handMeshesR) m.rotation.x = THREE.MathUtils.lerp(m.rotation.x, handTargetX, kArm);
+      for (const p of armPivotsL) p.rotation.x = THREE.MathUtils.lerp(p.rotation.x, armTargetX,  kArm);
+      for (const p of armPivotsR) p.rotation.x = THREE.MathUtils.lerp(p.rotation.x, armTargetX,  kArm);
+      // (hænderne følger armen, fordi de er attached i samme pivot;
+      // vil du have ekstra håndleds-bøjning kan vi finde håndmeshes inde i pivot’en og rotere dem lokalt.)
 
-      // opdater gang-fasen kun når vi er på jorden og i bevægelse
+      // opdatér gang-fasen kun på jorden
       if (!airborne) {
         const baseFreq = (moving ? 8.5 : 6.0);
         const speedFactor = 0.7 + 0.3 * Math.min(1, planarSpeed / state.speedRun);
@@ -310,15 +336,18 @@
     (function loop(){
       const dt = Math.min(clock.getDelta(), 1/30);
 
-      // bevægelse på XZ
       const dir = inputDir();
       const maxSpeed = (keys.get("shift") || keys.get("shiftleft") || keys.get("shiftright")) ? state.speedRun : state.speedWalk;
+
+      // acceleration/dæmpning
       state.vel.x = THREE.MathUtils.lerp(state.vel.x, dir.x * maxSpeed, 1 - Math.exp(-state.damping * dt));
       state.vel.z = THREE.MathUtils.lerp(state.vel.z, dir.z * maxSpeed, 1 - Math.exp(-state.damping * dt));
+
+      // opdater position
       state.pos.x += state.vel.x * dt;
       state.pos.z += state.vel.z * dt;
 
-      // hop: input edge
+      // hop input
       const sd = !!spaceDown();
       if (sd && !spaceWasDown && state.onGround) {
         state.vy = state.jumpVel;
@@ -340,7 +369,7 @@
         }
       }
 
-      // vend figur i bevægelsesretning (kun når man faktisk bevæger sig vandret)
+      // vend figur i bevægelsesretning
       const planarSpeed = Math.hypot(state.vel.x, state.vel.z);
       if (planarSpeed > 0.2) {
         const lookYaw = Math.atan2(-state.vel.x, -state.vel.z);
@@ -353,7 +382,7 @@
       batmanRoot.position.set(state.pos.x, state.y, state.pos.z);
       batmanRoot.rotation.y = state.yaw;
 
-      // animationer (ben, hofte, arme/hænder)
+      // animationer
       animateCharacter(dt, planarSpeed);
 
       // OrbitControls target følger Batman
