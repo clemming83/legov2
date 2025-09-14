@@ -2,36 +2,200 @@
 <html lang="da">
 <head>
   <meta charset="utf-8" />
-  <title>Batman Playtest v7 – pivots + hop + stabile skygger</title>
+  <title>Batman Playtest v8 – pivots + hop + stabile skygger + lyd</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     html, body { height:100%; margin:0; background:#0b0d11; color:#fff; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
     #error { position:fixed; inset:0; display:none; padding:16px; background:rgba(0,0,0,.85); z-index:9999; overflow:auto; }
     #error h3{margin:0 0 8px 0}
     #error pre{white-space:pre-wrap; word-break:break-word; background:#111; padding:12px; border:1px solid #333; border-radius:8px}
-    .hud { position:fixed; inset:auto 12px 12px auto; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.2); padding:6px 10px; border-radius:10px; font-size:12px; }
+    .hud { position:fixed; right:12px; bottom:12px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.2); padding:8px 10px; border-radius:10px; font-size:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
     .topbadge { position:fixed; top:12px; right:12px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.2); padding:6px 10px; border-radius:10px; font-size:12px; }
+    .hud button { background:#1c2532; color:#fff; border:1px solid #2f3a49; border-radius:8px; padding:6px 10px; cursor:pointer }
+    .hud input[type="range"] { width:120px }
+    .legend { position:fixed; left:12px; bottom:12px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.2); padding:6px 10px; border-radius:10px; font-size:12px; }
   </style>
 </head>
 <body>
-  <div class="hud" style="right:auto; left:12px; bottom:12px">
-  <button id="toggleMusic">🎵 Musik</button>
-  <input id="volMusic" type="range" min="0" max="1" step="0.01" value="0.7" />
-  &nbsp;&nbsp;
-  <button id="toggleSfx">🔊 SFX</button>
-  <input id="volSfx" type="range" min="0" max="1" step="0.01" value="0.9" />
-</div>
-  <div class="topbadge">Batman Playtest v7</div>
-  <div class="hud">WASD / Piletaster: Bevæg • Shift: Sprint • <b>Space: Hop</b> • Mus: Orbit/Zoom</div>
+  <div class="topbadge">Batman Playtest v8</div>
+  <div class="legend">WASD / Piletaster: Bevæg • Shift: Sprint • <b>Space: Hop</b> • Mus: Orbit/Zoom</div>
+  <div class="hud">
+    <button id="toggleMusic">🎵 Musik</button>
+    <label>Vol:</label><input id="volMusic" type="range" min="0" max="1" step="0.01" value="0.7" />
+    <span style="opacity:.7">Klik på spillet for at aktivere lyd</span>
+  </div>
   <div id="error"><h3>⚠️ Fejl</h3><div id="em"></div><pre id="es"></pre></div>
 
   <script type="module">
+    /**********************
+     * Lydmodul (AudioManager)
+     **********************/
+    class AudioManager {
+      constructor({ musicVolume = 0.7, sfxVolume = 0.9 } = {}) {
+        this.ctx = null;
+        this.masterGain = null;
+        this.musicGain = null;
+        this.sfxGain = null;
+        this._musicBuffers = new Map();
+        this._sfxBuffers = new Map();
+        this._currentMusic = null;
+        this._musicMuted = false;
+        this._sfxMuted = false;
+        this._targetMusicVol = musicVolume;
+        this._targetSfxVol = sfxVolume;
+        this._unlocked = false;
+        this._visibilityHandlersAttached = false;
+      }
+      _ensureCtx() {
+        if (this.ctx) return;
+        const AC = window.AudioContext || window.webkitAudioContext;
+        this.ctx = new AC();
+        this.masterGain = this.ctx.createGain();
+        this.masterGain.gain.value = 1.0;
+        this.masterGain.connect(this.ctx.destination);
+        this.musicGain = this.ctx.createGain();
+        this.musicGain.gain.value = this._musicMuted ? 0 : this._targetMusicVol;
+        this.musicGain.connect(this.masterGain);
+        this.sfxGain = this.ctx.createGain();
+        this.sfxGain.gain.value = this._sfxMuted ? 0 : this._targetSfxVol;
+        this.sfxGain.connect(this.masterGain);
+      }
+      async unlockOnFirstGesture(dom = document) {
+        if (this._unlocked) return;
+        const tryUnlock = async () => {
+          try {
+            this._ensureCtx();
+            await this.ctx.resume();
+            const osc = this.ctx.createOscillator(); const g = this.ctx.createGain();
+            g.gain.value = 0; osc.connect(g).connect(this.ctx.destination);
+            osc.start(); osc.stop(this.ctx.currentTime + 0.05);
+            this._unlocked = true;
+            dom.removeEventListener('pointerdown', tryUnlock);
+            dom.removeEventListener('touchstart', tryUnlock);
+          } catch {}
+        };
+        dom.addEventListener('pointerdown', tryUnlock, { passive: true });
+        dom.addEventListener('touchstart', tryUnlock, { passive: true });
+      }
+      attachVisibilityHandlers() {
+        if (this._visibilityHandlersAttached) return;
+        this._visibilityHandlersAttached = true;
+        document.addEventListener('visibilitychange', () => {
+          if (!this.ctx) return;
+          if (document.hidden) this.ctx.suspend?.(); else this.ctx.resume?.();
+        });
+      }
+      async _loadArrayBuffer(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('Fetch failed: ' + url);
+        return await res.arrayBuffer();
+      }
+      async _decode(ab) {
+        this._ensureCtx();
+        return await this.ctx.decodeAudioData(ab.slice(0));
+      }
+      async loadMusic(name, url) {
+        const ab = await this._loadArrayBuffer(url);
+        const buffer = await this._decode(ab);
+        this._musicBuffers.set(name, buffer);
+      }
+      async playMusic(name, { loop = true, fadeSec = 0.8 } = {}) {
+        this._ensureCtx();
+        const buf = this._musicBuffers.get(name);
+        if (!buf) throw new Error('Music not loaded: ' + name);
+        const now = this.ctx.currentTime;
+        if (this._currentMusic?.gain) {
+          const gOld = this._currentMusic.gain.gain;
+          gOld.cancelScheduledValues(now);
+          gOld.setValueAtTime(gOld.value, now);
+          gOld.linearRampToValueAtTime(0, now + fadeSec);
+          const oldNode = this._currentMusic.node;
+          setTimeout(() => { try { oldNode.stop(); } catch {} }, fadeSec * 1000 + 50);
+        }
+        const src = this.ctx.createBufferSource();
+        src.buffer = buf; src.loop = loop;
+        const g = this.ctx.createGain(); g.gain.value = 0;
+        src.connect(g).connect(this.musicGain);
+        src.start();
+        const target = this._musicMuted ? 0 : this._targetMusicVol;
+        g.gain.cancelScheduledValues(now);
+        g.gain.setValueAtTime(0, now);
+        g.gain.linearRampToValueAtTime(target, now + fadeSec);
+        this._currentMusic = { src: name, node: src, gain: g, startedAt: now };
+      }
+      stopMusic({ fadeSec = 0.6 } = {}) {
+        if (!this._currentMusic || !this.ctx) return;
+        const now = this.ctx.currentTime;
+        const g = this._currentMusic.gain.gain;
+        g.cancelScheduledValues(now);
+        g.setValueAtTime(g.value, now);
+        g.linearRampToValueAtTime(0, now + fadeSec);
+        const node = this._currentMusic.node;
+        setTimeout(() => { try { node.stop(); } catch {} }, fadeSec * 1000 + 50);
+        this._currentMusic = null;
+      }
+      setMusicVolume(vol) {
+        this._targetMusicVol = Math.max(0, Math.min(1, vol));
+        if (this.musicGain) this.musicGain.gain.value = this._musicMuted ? 0 : this._targetMusicVol;
+      }
+      muteMusic(muted = true) {
+        this._musicMuted = !!muted;
+        if (this.musicGain) this.musicGain.gain.value = this._musicMuted ? 0 : this._targetMusicVol;
+      }
+      async loadSFX(name, urls) {
+        const list = Array.isArray(urls) ? urls : [urls];
+        const out = [];
+        for (const url of list) {
+          const ab = await this._loadArrayBuffer(url);
+          out.push(await this._decode(ab));
+        }
+        this._sfxBuffers.set(name, out);
+      }
+      playSFX(name, opts = {}) {
+        this._ensureCtx();
+        const bufs = this._sfxBuffers.get(name);
+        if (!bufs || !bufs.length) { return null; }
+        const { volume = 1, rate = 1, position = null, loop = false } = opts;
+        const src = this.ctx.createBufferSource();
+        src.buffer = bufs[(Math.random() * bufs.length) | 0];
+        src.playbackRate.value = rate; src.loop = loop;
+        const g = this.ctx.createGain();
+        const vol = (this._sfxMuted ? 0 : this._targetSfxVol) * Math.max(0, Math.min(1, volume));
+        g.gain.value = vol;
+        if (position) {
+          const p = new PannerNode(this.ctx, { panningModel: "HRTF", distanceModel: "inverse",
+            positionX: position.x||0, positionY: position.y||0, positionZ: position.z||0,
+            refDistance: 2, maxDistance: 200, rolloffFactor: 1.5 });
+          src.connect(g).connect(p).connect(this.sfxGain);
+        } else {
+          src.connect(g).connect(this.sfxGain);
+        }
+        src.start();
+        if (!loop) src.addEventListener("ended", () => { try { src.disconnect(); g.disconnect(); } catch {} });
+        return src;
+      }
+      setSfxVolume(vol) {
+        this._targetSfxVol = Math.max(0, Math.min(1, vol));
+        if (this.sfxGain) this.sfxGain.gain.value = this._sfxMuted ? 0 : this._targetSfxVol;
+      }
+      muteSfx(muted = true) {
+        this._sfxMuted = !!muted;
+        if (this.sfxGain) this.sfxGain.gain.value = this._sfxMuted ? 0 : this._targetSfxVol;
+      }
+      setMasterVolume(vol) {
+        this._ensureCtx();
+        this.masterGain.gain.value = Math.max(0, Math.min(1, vol));
+      }
+    }
+
+    /**********************
+     * Spil (Three.js)
+     **********************/
     import * as THREE from "https://esm.sh/three@0.160.0";
     import { OBJLoader } from "https://esm.sh/three@0.160.0/examples/jsm/loaders/OBJLoader.js";
     import { MTLLoader } from "https://esm.sh/three@0.160.0/examples/jsm/loaders/MTLLoader.js";
     import { OrbitControls } from "https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js";
 
-    // ---------- fejl-overlay ----------
     const showErr = (msg, stack="")=>{
       const box = document.getElementById('error');
       document.getElementById('em').textContent = String(msg || "(ukendt fejl)");
@@ -45,7 +209,7 @@
       showErr(r.message || r, r.stack);
     });
 
-    // ---------- renderer/scene/cam ----------
+    // Renderer
     const renderer = new THREE.WebGLRenderer({ antialias:true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.setSize(innerWidth, innerHeight);
@@ -54,22 +218,17 @@
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     document.body.appendChild(renderer.domElement);
 
+    // Scene + kamera + controls
     const scene = new THREE.Scene();
-
     const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 500);
     camera.position.set(0, 2.2, 6);
-
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.enablePan = false;
-    controls.minDistance = 2.5;
-    controls.maxDistance = 12;
-    controls.maxPolarAngle = Math.PI * 0.49;
+    controls.enableDamping = true; controls.enablePan = false;
+    controls.minDistance = 2.5; controls.maxDistance = 12; controls.maxPolarAngle = Math.PI * 0.49;
     controls.target.set(0, 1.0, 0);
 
-    // lys + gulv
+    // Lys
     scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-
     const sun = new THREE.DirectionalLight(0xffffff, 1.0);
     sun.position.set(6, 12, 6);
     sun.castShadow = true;
@@ -81,56 +240,38 @@
     sc.near = 0.1; sc.far = 120;
     scene.add(sun);
 
+    // Gulv
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(200,200),
       new THREE.MeshStandardMaterial({ color:"#2a2f37", roughness:0.95 })
     );
-    ground.rotation.x = -Math.PI/2;
-    ground.receiveShadow = true;
-    scene.add(ground);
-
+    ground.rotation.x = -Math.PI/2; ground.receiveShadow = true; scene.add(ground);
     const grid = new THREE.GridHelper(200, 200, 0x3a4150, 0x232833);
-    grid.position.y = 0.001;
-    scene.add(grid);
+    grid.position.y = 0.001; scene.add(grid);
 
-    // ---------- input ----------
+    // Input
     const keys = new Map();
-    const setKey = (e, down) => { keys.set(e.key.toLowerCase(), down); };
-    addEventListener("keydown", e => setKey(e, true));
-    addEventListener("keyup",   e => setKey(e, false));
-
-    // hop: edge-detection for Space
+    addEventListener("keydown", e => keys.set(e.key.toLowerCase(), true));
+    addEventListener("keyup",   e => keys.set(e.key.toLowerCase(), false));
     let spaceWasDown = false;
     const spaceDown = () => (keys.get(" ") || keys.get("space") || keys.get("spacebar"));
 
-    // ---------- remap maps/ -> textures/ (og neutralisér bump) ----------
+    // Remap textures (maps/ -> textures/)
     const PIX1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=";
     THREE.DefaultLoadingManager.setURLModifier((url)=>{
       try { url = new URL(url, location.href).pathname; } catch {}
-      if (url.includes("/maps/bump/")) return PIX1; // 1x1 png
+      if (url.includes("/maps/bump/")) return PIX1;
       if (url.includes("/maps/"))      return url.replace("/maps/","/textures/");
       return url;
     });
 
-    // ---------- load OBJ+MTL ----------
-    const mtlLoader = new MTLLoader();
-    mtlLoader.setResourcePath("assets/Batman/");
+    // Batman setup
+    const mtlLoader = new MTLLoader(); mtlLoader.setResourcePath("assets/Batman/");
+    const batmanRoot = new THREE.Group(); scene.add(batmanRoot);
+    sun.target = batmanRoot; scene.add(sun.target);
+    const hip = new THREE.Group(); hip.position.set(0, 0.0, 0); batmanRoot.add(hip);
 
-    // Batman root + noder
-    const batmanRoot = new THREE.Group(); // global position/orientering (inkl. hop Y)
-    scene.add(batmanRoot);
-
-    // ret solens target til Batman for stabile skygger
-    sun.target = batmanRoot;
-    scene.add(sun.target);
-
-    const hip = new THREE.Group();       // hofte (bærer hele OBJ)
-    hip.position.set(0, 0.0, 0);
-    batmanRoot.add(hip);
-
-    // meshes til ben/arme/hænder
     let meshLegL=null, meshLegR=null, meshArmL=null, meshHandL=null, meshArmR=null, meshHandR=null;
-    // pivot-grupper vi roterer
     let legPivotL=null, legPivotR=null, armPivotL=null, armPivotR=null;
 
     function pbrifyMaterials(mtl){
@@ -140,30 +281,20 @@
         if (mat.emissiveMap) { mat.emissiveMap.colorSpace = THREE.SRGBColorSpace; mat.emissiveMap.needsUpdate = true; }
       });
     }
-    function setShadow(obj){
-      obj.traverse(c=>{
-        if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; }
-      });
-    }
+    function setShadow(obj){ obj.traverse(c=>{ if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } }); }
     function findMeshes(obj){
-      obj.traverse(node=>{
-        if (!node.isMesh) return;
-        const n = (node.name || "");
-        if (n === "Part.6")  meshLegL  = node; // venstre ben
-        if (n === "Part.7")  meshLegR  = node; // højre ben
-        if (n === "Part.11") meshArmL  = node; // venstre arm
-        if (n === "Part.12") meshHandL = node; // venstre hånd
-        if (n === "Part.9")  meshArmR  = node; // højre arm
-        if (n === "Part.10") meshHandR = node; // højre hånd
+      obj.traverse(n=>{
+        if (!n.isMesh) return;
+        const name = n.name || "";
+        if (name === "Part.6")  meshLegL  = n;
+        if (name === "Part.7")  meshLegR  = n;
+        if (name === "Part.11") meshArmL  = n;
+        if (name === "Part.12") meshHandL = n;
+        if (name === "Part.9")  meshArmR  = n;
+        if (name === "Part.10") meshHandR = n;
       });
-      console.log("[Found]", {
-        LegL: meshLegL?.name, LegR: meshLegR?.name,
-        ArmL: meshArmL?.name, HandL: meshHandL?.name,
-        ArmR: meshArmR?.name, HandR: meshHandR?.name
-      });
+      console.log("[Found]", {meshLegL:meshLegL?.name, meshLegR:meshLegR?.name, meshArmL:meshArmL?.name, meshHandL:meshHandL?.name, meshArmR:meshArmR?.name, meshHandR:meshHandR?.name});
     }
-
-    // Opret pivot ved øverste punkt vha. WORLD-bbox, og placer pivot i PARENT-LOKALT rum.
     function makePivotAtTop_WorldBox(mesh, alsoAttach = [], inwardX = 0){
       if (!mesh) return null;
       const worldBox = new THREE.Box3().setFromObject(mesh);
@@ -173,21 +304,15 @@
         (worldBox.min.z + worldBox.max.z)/2
       );
       const parent = mesh.parent;
-      const pivot = new THREE.Group();
-      parent.add(pivot);
+      const pivot = new THREE.Group(); parent.add(pivot);
       const topLocal = parent.worldToLocal(topWorld.clone());
       pivot.position.copy(topLocal);
-
-      // lille indad-offset mod torso for naturligere akse
       if (inwardX !== 0){
-        const torsoWorld = new THREE.Vector3();
-        hip.getWorldPosition(torsoWorld);
-        const meshWorld = new THREE.Vector3();
-        mesh.getWorldPosition(meshWorld);
+        const torsoWorld = new THREE.Vector3(); hip.getWorldPosition(torsoWorld);
+        const meshWorld = new THREE.Vector3(); mesh.getWorldPosition(meshWorld);
         const side = (meshWorld.x >= torsoWorld.x) ? 1 : -1;
         pivot.position.x += inwardX * side;
       }
-
       pivot.attach(mesh);
       for (const child of alsoAttach) { if (child) pivot.attach(child); }
       return pivot;
@@ -197,104 +322,67 @@
       "assets/Batman/Untitled Model.mtl",
       (mtl) => {
         try {
-          mtl.preload();
-          pbrifyMaterials(mtl);
-
-          const objLoader = new OBJLoader();
-          objLoader.setMaterials(mtl);
+          mtl.preload(); pbrifyMaterials(mtl);
+          const objLoader = new OBJLoader(); objLoader.setMaterials(mtl);
           objLoader.load(
             "assets/Batman/Untitled Model.obj",
             (obj) => {
               try {
                 setShadow(obj);
-
-                // skaler til ~1.7 høj
                 let box = new THREE.Box3().setFromObject(obj);
                 const size = new THREE.Vector3(); box.getSize(size);
                 const scale = (size.y > 1e-4) ? (1.7 / size.y) : 1.0;
                 obj.scale.setScalar(scale);
-
-                // fødder på gulv (model-lokal)
                 box = new THREE.Box3().setFromObject(obj);
                 obj.position.y += -box.min.y;
-
-                // vend 180° (kigger væk fra kameraet)
                 obj.rotation.y = Math.PI;
-
                 hip.add(obj);
-
-                // find relevante meshes
                 findMeshes(obj);
-
-                // BYG PIVOTS (world-bbox → parent-local), med let indad-offset
                 legPivotL = makePivotAtTop_WorldBox(meshLegL, [], 0.02);
                 legPivotR = makePivotAtTop_WorldBox(meshLegR, [], 0.02);
                 armPivotL = makePivotAtTop_WorldBox(meshArmL, [meshHandL], 0.02);
                 armPivotR = makePivotAtTop_WorldBox(meshArmR, [meshHandR], 0.02);
-
                 console.log("[Batman] OBJ+MTL loaded OK (world-pivots built)");
-              } catch (e) {
-                showErr("Batman model post-process fejlede", e.stack);
-              } finally {
-                THREE.DefaultLoadingManager.setURLModifier(null);
-              }
+              } catch (e) { showErr("Batman model post-process fejlede", e.stack); }
+              finally { THREE.DefaultLoadingManager.setURLModifier(null); }
             },
             undefined,
             (err)=>{ showErr("OBJ kunne ikke indlæses (tjek stier/filnavn).", String(err)); THREE.DefaultLoadingManager.setURLModifier(null); }
           );
-        } catch (e) {
-          showErr("MTL post-process fejlede", e.stack);
-          THREE.DefaultLoadingManager.setURLModifier(null);
-        }
+        } catch (e) { showErr("MTL post-process fejlede", e.stack); THREE.DefaultLoadingManager.setURLModifier(null); }
       },
       undefined,
       (err)=>{ showErr("MTL kunne ikke indlæses", String(err)); THREE.DefaultLoadingManager.setURLModifier(null); }
     );
 
-    // ---------- bevægelse + hop-fysik ----------
+    // Bevægelse + hop
     const state = {
-      pos: new THREE.Vector3(0, 0, 0), // x,z; y kontrolleres separat (hop)
+      pos: new THREE.Vector3(0, 0, 0),
       yaw: 0,
       vel: new THREE.Vector3(),
-      speedWalk: 3.2,
-      speedRun: 5.6,
-      damping: 12.0,
-      // hop
-      y: 0,
-      vy: 0,
-      gravity: -18.0,
-      jumpVel: 7.6,
-      onGround: true,
-      airTime: 0
+      speedWalk: 3.2, speedRun: 5.6, damping: 12.0,
+      y: 0, vy: 0, gravity: -18.0, jumpVel: 7.6, onGround: true, airTime: 0
     };
-
     function inputDir(){
       let f=0, s=0;
       if (keys.get("w") || keys.get("arrowup")) f += 1;
       if (keys.get("s") || keys.get("arrowdown")) f -= 1;
       if (keys.get("a") || keys.get("arrowleft")) s -= 1;
       if (keys.get("d") || keys.get("arrowright")) s += 1;
-      const v = new THREE.Vector3(s, 0, -f);
-      if (v.lengthSq()>0) v.normalize();
-      // bevægelse i forhold til kameraets yaw
+      const v = new THREE.Vector3(s, 0, -f); if (v.lengthSq()>0) v.normalize();
       const camYaw = Math.atan2(camera.position.x - controls.target.x, camera.position.z - controls.target.z);
-      v.applyAxisAngle(new THREE.Vector3(0,1,0), camYaw);
-      return v;
+      v.applyAxisAngle(new THREE.Vector3(0,1,0), camYaw); return v;
     }
 
-    // ---------- animation (ben + hofte + arme) ----------
+    // Animation
     let walkPhase = 0;
-
     function animateCharacter(dt, planarSpeed){
       const moving = planarSpeed > 0.08;
       const airborne = !state.onGround;
-
-      // hofte-bob (ingen bob i luften)
-      const bobAmp = 0.02; // dæmpet for mere "tung" følelse
+      const bobAmp = 0.02;
       const bob = (!airborne && moving) ? Math.abs(Math.sin(walkPhase*1.6)) * bobAmp : 0.0;
       hip.position.y = THREE.MathUtils.lerp(hip.position.y, bob, 1 - Math.exp(-10 * dt));
 
-      // -------- BEN (via pivots i hofterne) ----------
       let leftTargetX = 0, rightTargetX = 0;
       if (airborne) {
         const splayMax = 0.95;
@@ -302,8 +390,7 @@
         const falling = state.vy < -0.1 ? 1 : 0;
         const gather = Math.min(1, (nearGround * 0.8 + falling * 0.2));
         const splay = splayMax * (1 - 0.85 * gather);
-        leftTargetX  =  splay;
-        rightTargetX = -splay;
+        leftTargetX  =  splay; rightTargetX = -splay;
       } else {
         const ampMax = 0.7;
         const amp = moving ? Math.min(1, planarSpeed / state.speedRun) * ampMax : 0.0;
@@ -314,14 +401,11 @@
       if (legPivotL) legPivotL.rotation.x = THREE.MathUtils.lerp(legPivotL.rotation.x, leftTargetX,  kLeg);
       if (legPivotR) legPivotR.rotation.x = THREE.MathUtils.lerp(legPivotR.rotation.x, rightTargetX, kLeg);
 
-      // -------- ARME (skulder-pivots; hænder følger) ----------
-      let armTargetX = 0;
-      if (airborne) armTargetX = -1.05; // løft armene i hop
+      let armTargetX = 0; if (airborne) armTargetX = -1.05;
       const kArm = 1 - Math.exp(-14 * dt);
       if (armPivotL) armPivotL.rotation.x = THREE.MathUtils.lerp(armPivotL.rotation.x, armTargetX, kArm);
       if (armPivotR) armPivotR.rotation.x = THREE.MathUtils.lerp(armPivotR.rotation.x, armTargetX, kArm);
 
-      // opdatér gang-fasen kun på jorden
       if (!airborne) {
         const baseFreq = (moving ? 8.5 : 6.0);
         const speedFactor = 0.7 + 0.3 * Math.min(1, planarSpeed / state.speedRun);
@@ -329,45 +413,70 @@
       }
     }
 
-    // ---------- main loop ----------
+    // Lyd: init + UI
+    const audio = new AudioManager({ musicVolume: 0.7 });
+    audio.attachVisibilityHandlers();
+    audio.unlockOnFirstGesture(document);
+
+    // Sæt din baggrundsmusik her (læg filen på denne sti):
+    //  -> /legov2/assets/audio/background.mp3
+    const MUSIC_PATH = "assets/audio/background.mp3";
+
+    const btnMusic = document.getElementById("toggleMusic");
+    const slMusic  = document.getElementById("volMusic");
+    let musicMuted = false;
+
+    // Preload musik
+    (async () => {
+      try {
+        await audio.loadMusic("bg", MUSIC_PATH);
+      } catch (e) {
+        console.warn("Kunne ikke loade musik:", e);
+      }
+    })();
+
+    // Start musik ved første klik
+    const startOnGesture = async () => {
+      document.removeEventListener("pointerdown", startOnGesture);
+      try { await audio.playMusic("bg", { loop:true, fadeSec:1.2 }); } catch {}
+    };
+    document.addEventListener("pointerdown", startOnGesture);
+
+    btnMusic.onclick = () => {
+      musicMuted = !musicMuted;
+      audio.muteMusic(musicMuted);
+      btnMusic.textContent = musicMuted ? "🚫 Musik" : "🎵 Musik";
+    };
+    slMusic.oninput = (e) => audio.setMusicVolume(parseFloat(e.target.value));
+
+    // Hop-lyd (valgfrit): læg filer og fjern kommentar
+    // await audio.loadSFX("jump", ["assets/audio/jump_01.mp3","assets/audio/jump_02.mp3"]);
+
+    // Main loop
     const clock = new THREE.Clock();
+    let stepTimer = 0; // (kan bruges til fodtrins-lyde senere)
     (function loop(){
       const dt = Math.min(clock.getDelta(), 1/30);
-
       const dir = inputDir();
       const maxSpeed = (keys.get("shift") || keys.get("shiftleft") || keys.get("shiftright")) ? state.speedRun : state.speedWalk;
-
-      // acceleration/dæmpning
       state.vel.x = THREE.MathUtils.lerp(state.vel.x, dir.x * maxSpeed, 1 - Math.exp(-state.damping * dt));
       state.vel.z = THREE.MathUtils.lerp(state.vel.z, dir.z * maxSpeed, 1 - Math.exp(-state.damping * dt));
+      state.pos.x += state.vel.x * dt; state.pos.z += state.vel.z * dt;
 
-      // opdater position
-      state.pos.x += state.vel.x * dt;
-      state.pos.z += state.vel.z * dt;
-
-      // hop input
       const sd = !!spaceDown();
       if (sd && !spaceWasDown && state.onGround) {
-        state.vy = state.jumpVel;
-        state.onGround = false;
-        state.airTime = 0;
+        state.vy = state.jumpVel; state.onGround = false; state.airTime = 0;
+        // audio.playSFX("jump", { volume: 1.0 }); // hvis jump-sfx er loaded
       }
       spaceWasDown = sd;
 
-      // vertikal fysik
       if (!state.onGround) {
         state.vy += state.gravity * dt;
         state.y  += state.vy * dt;
         state.airTime += dt;
-
-        if (state.y <= 0) {
-          state.y = 0;
-          state.vy = 0;
-          state.onGround = true;
-        }
+        if (state.y <= 0) { state.y = 0; state.vy = 0; state.onGround = true; }
       }
 
-      // vend figur i bevægelsesretning
       const planarSpeed = Math.hypot(state.vel.x, state.vel.z);
       if (planarSpeed > 0.2) {
         const lookYaw = Math.atan2(-state.vel.x, -state.vel.z);
@@ -376,22 +485,21 @@
         state.yaw = state.yaw + dy * Math.min(1, dt*10);
       }
 
-      // placer batman (inkl. y fra hop)
       batmanRoot.position.set(state.pos.x, state.y, state.pos.z);
       batmanRoot.rotation.y = state.yaw;
 
-      // animationer
       animateCharacter(dt, planarSpeed);
 
-      // OrbitControls target følger Batman
       controls.target.set(state.pos.x, 1.0 + state.y, state.pos.z);
       controls.update();
+
+      // (fodtrin-lyde kunne trigges her med stepTimer…)
 
       renderer.render(scene, camera);
       requestAnimationFrame(loop);
     })();
 
-    // ---------- resize ----------
+    // Resize
     addEventListener('resize', ()=>{
       camera.aspect = innerWidth/innerHeight;
       camera.updateProjectionMatrix();
