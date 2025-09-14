@@ -2,7 +2,7 @@
 <html lang="da">
 <head>
   <meta charset="utf-8" />
-  <title>Batman Playtest v6 – korrekte hofte/skulder pivots</title>
+  <title>Batman Playtest v7 – pivots + hop + stabile skygger</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     html, body { height:100%; margin:0; background:#0b0d11; color:#fff; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
@@ -14,7 +14,7 @@
   </style>
 </head>
 <body>
-  <div class="topbadge">Batman Playtest v6</div>
+  <div class="topbadge">Batman Playtest v7</div>
   <div class="hud">WASD / Piletaster: Bevæg • Shift: Sprint • <b>Space: Hop</b> • Mus: Orbit/Zoom</div>
   <div id="error"><h3>⚠️ Fejl</h3><div id="em"></div><pre id="es"></pre></div>
 
@@ -44,6 +44,7 @@
     renderer.setSize(innerWidth, innerHeight);
     renderer.setClearColor(0x0b0d11, 1);
     renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     document.body.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
@@ -61,9 +62,16 @@
 
     // lys + gulv
     scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+
     const sun = new THREE.DirectionalLight(0xffffff, 1.0);
-    sun.position.set(6, 10, 6);
+    sun.position.set(6, 12, 6);
     sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.bias = -0.0005;
+    sun.shadow.normalBias = 0.02;
+    const sc = sun.shadow.camera;
+    sc.left = -80; sc.right = 80; sc.top = 80; sc.bottom = -80;
+    sc.near = 0.1; sc.far = 120;
     scene.add(sun);
 
     const ground = new THREE.Mesh(
@@ -105,13 +113,16 @@
     const batmanRoot = new THREE.Group(); // global position/orientering (inkl. hop Y)
     scene.add(batmanRoot);
 
+    // ret solens target til Batman for stabile skygger
+    sun.target = batmanRoot;
+    scene.add(sun.target);
+
     const hip = new THREE.Group();       // hofte (bærer hele OBJ)
     hip.position.set(0, 0.0, 0);
     batmanRoot.add(hip);
 
     // meshes til ben/arme/hænder
     let meshLegL=null, meshLegR=null, meshArmL=null, meshHandL=null, meshArmR=null, meshHandR=null;
-
     // pivot-grupper vi roterer
     let legPivotL=null, legPivotR=null, armPivotL=null, armPivotR=null;
 
@@ -148,37 +159,30 @@
     // Opret pivot ved øverste punkt vha. WORLD-bbox, og placer pivot i PARENT-LOKALT rum.
     function makePivotAtTop_WorldBox(mesh, alsoAttach = [], inwardX = 0){
       if (!mesh) return null;
-      // 1) world-bbox for hele ben/arm
       const worldBox = new THREE.Box3().setFromObject(mesh);
       const topWorld = new THREE.Vector3(
         (worldBox.min.x + worldBox.max.x)/2,
         worldBox.max.y,
         (worldBox.min.z + worldBox.max.z)/2
       );
-
-      // 2) lav pivot i forælderens lokale koordinater
       const parent = mesh.parent;
       const pivot = new THREE.Group();
       parent.add(pivot);
       const topLocal = parent.worldToLocal(topWorld.clone());
       pivot.position.copy(topLocal);
 
-      // 3) valgfri lille indad-offset mod torso (gør skulder/hoftes pivot lidt mere naturlig)
+      // lille indad-offset mod torso for naturligere akse
       if (inwardX !== 0){
-        // bestem side: hvis mesh center.x > torso center.x => højre side (positiv x)
         const torsoWorld = new THREE.Vector3();
         hip.getWorldPosition(torsoWorld);
         const meshWorld = new THREE.Vector3();
         mesh.getWorldPosition(meshWorld);
         const side = (meshWorld.x >= torsoWorld.x) ? 1 : -1;
-        pivot.position.x += inwardX * side; // træk ind mod midten
+        pivot.position.x += inwardX * side;
       }
 
-      // 4) reparent så child(ren) beholder world transform, men roteres om pivot herfra
       pivot.attach(mesh);
-      for (const child of alsoAttach) {
-        if (child) pivot.attach(child);
-      }
+      for (const child of alsoAttach) { if (child) pivot.attach(child); }
       return pivot;
     }
 
@@ -210,18 +214,14 @@
                 // vend 180° (kigger væk fra kameraet)
                 obj.rotation.y = Math.PI;
 
-                // put hele mesh under hofte
                 hip.add(obj);
 
                 // find relevante meshes
                 findMeshes(obj);
 
-                // BYG PIVOTS med world-bbox:
-                // ben: pivot oppe ved hofte (lille indad-offset 0.02 for naturligere akse)
+                // BYG PIVOTS (world-bbox → parent-local), med let indad-offset
                 legPivotL = makePivotAtTop_WorldBox(meshLegL, [], 0.02);
                 legPivotR = makePivotAtTop_WorldBox(meshLegR, [], 0.02);
-
-                // arme: pivot ved skulder og grupér hånd under samme pivot
                 armPivotL = makePivotAtTop_WorldBox(meshArmL, [meshHandL], 0.02);
                 armPivotR = makePivotAtTop_WorldBox(meshArmR, [meshHandR], 0.02);
 
@@ -246,7 +246,7 @@
 
     // ---------- bevægelse + hop-fysik ----------
     const state = {
-      pos: new THREE.Vector3(0, 0, 0), // x,z bruges; y kontrolleres separat (hop)
+      pos: new THREE.Vector3(0, 0, 0), // x,z; y kontrolleres separat (hop)
       yaw: 0,
       vel: new THREE.Vector3(),
       speedWalk: 3.2,
@@ -283,7 +283,7 @@
       const airborne = !state.onGround;
 
       // hofte-bob (ingen bob i luften)
-      const bobAmp = 0.03;
+      const bobAmp = 0.02; // dæmpet for mere "tung" følelse
       const bob = (!airborne && moving) ? Math.abs(Math.sin(walkPhase*1.6)) * bobAmp : 0.0;
       hip.position.y = THREE.MathUtils.lerp(hip.position.y, bob, 1 - Math.exp(-10 * dt));
 
