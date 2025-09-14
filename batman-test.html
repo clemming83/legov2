@@ -2,7 +2,7 @@
 <html lang="da">
 <head>
   <meta charset="utf-8" />
-  <title>Batman Playtest – løb rundt + ben-animation</title>
+  <title>Batman Playtest v2 – løb + ben-animation + orbit cam</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     html, body { height:100%; margin:0; background:#0b0d11; color:#fff; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
@@ -14,14 +14,15 @@
   </style>
 </head>
 <body>
-  <div class="topbadge">Batman Playtest v1</div>
-  <div class="hud">WASD / Piletaster: Bevæg • Q/E: Drej kamera offset • Shift: Sprint</div>
+  <div class="topbadge">Batman Playtest v2</div>
+  <div class="hud">WASD / Piletaster: Bevæg • Shift: Sprint • Mus: Orbit/Zoom</div>
   <div id="error"><h3>⚠️ Fejl</h3><div id="em"></div><pre id="es"></pre></div>
 
   <script type="module">
     import * as THREE from "https://esm.sh/three@0.160.0";
     import { OBJLoader } from "https://esm.sh/three@0.160.0/examples/jsm/loaders/OBJLoader.js";
     import { MTLLoader } from "https://esm.sh/three@0.160.0/examples/jsm/loaders/MTLLoader.js";
+    import { OrbitControls } from "https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js";
 
     // ---------- fejl-overlay ----------
     const showErr = (msg, stack="")=>{
@@ -46,8 +47,17 @@
     document.body.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
+
     const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 500);
     camera.position.set(0, 2.2, 6);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.enablePan = false;
+    controls.minDistance = 2.5;
+    controls.maxDistance = 12;
+    controls.maxPolarAngle = Math.PI * 0.49; // ikke for langt ned
+    controls.target.set(0, 1.0, 0);
 
     // lys + gulv
     scene.add(new THREE.AmbientLight(0xffffff, 0.6));
@@ -86,22 +96,21 @@
     // ---------- load OBJ+MTL ----------
     const mtlLoader = new MTLLoader();
     mtlLoader.setResourcePath("assets/Batman/");
-    let batmanRoot = new THREE.Group();
+
+    // Batman root + noder
+    const batmanRoot = new THREE.Group(); // global position/orientering
     scene.add(batmanRoot);
 
-    // references for animation
-    const hip = new THREE.Group();   // hofte-bob (hele krop)
-    const legLGroup = new THREE.Group(); // fallback ben-grupper
-    const legRGroup = new THREE.Group();
+    const hip = new THREE.Group();      // hofte (hele krop bobber)
+    const legPivotL = new THREE.Group();// pivots hvis vi ikke finder benmeshes
+    const legPivotR = new THREE.Group();
     hip.position.set(0, 0.0, 0);
     batmanRoot.add(hip);
-    hip.add(legLGroup, legRGroup);
+    hip.add(legPivotL, legPivotR);
 
-    // faktiske leg meshes hvis vi finder dem
     const legMeshesL = [];
     const legMeshesR = [];
 
-    // textures (face/torso) er med i MTL via remap — men vi sætter sRGB
     function pbrifyMaterials(mtl){
       Object.values(mtl.materials || {}).forEach(mat=>{
         mat.side = THREE.DoubleSide;
@@ -109,26 +118,31 @@
         if (mat.emissiveMap) { mat.emissiveMap.colorSpace = THREE.SRGBColorSpace; mat.emissiveMap.needsUpdate = true; }
       });
     }
-
-    function collectLegMeshes(obj){
-      // prøv at finde meshes der ligner ben
-      obj.traverse(node=>{
-        if (!node.isMesh) return;
-        const n = (node.name || "").toLowerCase();
-        // heuristik: alt med "leg", "thigh", "boot" etc.
-        if (/left.*leg|leg.*left|l[-_\s]?leg|thigh.*l|boot.*l|leg_l|lleg/.test(n)) legMeshesL.push(node);
-        if (/right.*leg|leg.*right|r[-_\s]?leg|thigh.*r|boot.*r|leg_r|rleg/.test(n)) legMeshesR.push(node);
-      });
-      console.log("[Leg detection] L:", legMeshesL.map(m=>m.name), "R:", legMeshesR.map(m=>m.name));
-    }
-
     function setShadow(obj){
       obj.traverse(c=>{
         if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; }
       });
     }
+    function collectLegMeshes(obj){
+      obj.traverse(node=>{
+        if (!node.isMesh) return;
+        const n = (node.name || "");
+        // EKSAKT NAVN fra Blender:
+        if (n === "Part.6") legMeshesL.push(node);
+        if (n === "Part.7") legMeshesR.push(node);
 
-    // load
+        // (beholder heuristik som fallback – gør ingen skade)
+        const lower = n.toLowerCase();
+        if (/left.*leg|leg.*left|l[-_\s]?leg|thigh.*l|boot.*l|leg_l|lleg/.test(lower)) {
+          if (!legMeshesL.includes(node)) legMeshesL.push(node);
+        }
+        if (/right.*leg|leg.*right|r[-_\s]?leg|thigh.*r|boot.*r|leg_r|rleg/.test(lower)) {
+          if (!legMeshesR.includes(node)) legMeshesR.push(node);
+        }
+      });
+      console.log("[Leg detection] L:", legMeshesL.map(m=>m.name), "R:", legMeshesR.map(m=>m.name));
+    }
+
     mtlLoader.load(
       "assets/Batman/Untitled Model.mtl",
       (mtl) => {
@@ -150,7 +164,7 @@
                 const scale = (size.y > 1e-4) ? (1.7 / size.y) : 1.0;
                 obj.scale.setScalar(scale);
 
-                // fødder på gulv (y=0)
+                // fødder på gulv
                 box = new THREE.Box3().setFromObject(obj);
                 obj.position.y += -box.min.y;
 
@@ -160,7 +174,7 @@
                 // put hele mesh under hofte
                 hip.add(obj);
 
-                // prøv at finde benmeshes
+                // find benmeshes
                 collectLegMeshes(obj);
 
                 console.log("[Batman] OBJ+MTL loaded OK");
@@ -200,37 +214,34 @@
       if (keys.get("d") || keys.get("arrowright")) s += 1;
       const v = new THREE.Vector3(s, 0, -f);
       if (v.lengthSq()>0) v.normalize();
-      v.applyAxisAngle(new THREE.Vector3(0,1,0), state.yaw);
+
+      // bevægelse i forhold til kameraets yaw (så "W" går mod det du kigger på)
+      const camYaw = Math.atan2(camera.position.x - controls.target.x, camera.position.z - controls.target.z);
+      v.applyAxisAngle(new THREE.Vector3(0,1,0), camYaw);
       return v;
     }
-
-    let camOrbit = 0.0; // kamera horisontal offset ift. spiller
-    addEventListener("keydown", (e)=>{
-      const k = e.key.toLowerCase();
-      if (k==="q") camOrbit += 0.2;
-      if (k==="e") camOrbit -= 0.2;
-    });
 
     // ---------- animation (ben + hofte) ----------
     let walkPhase = 0;
     function animateLegs(dt, speed){
-      // hofte-bob
       const moving = speed > 0.1;
+      // hofte-bob
       const bob = moving ? Math.abs(Math.sin(walkPhase*2)) * 0.06 : 0.0;
       hip.position.y = bob;
 
-      // hvis vi fandt benmeshes, sving dem – ellers no-op (men hofte-bob er nok til lidt liv)
-      const amp = moving ? Math.min(1, speed/ state.speedRun) * 0.8 : 0.0;
+      const amp = moving ? Math.min(1, speed/ state.speedRun) * 0.9 : 0.0;
       const leftAng = Math.sin(walkPhase) * amp;
       const rightAng = -leftAng;
 
       if (legMeshesL.length || legMeshesR.length) {
-        // roter omkring X (frem/tilbage)
         for (const m of legMeshesL)  m.rotation.x = leftAng;
         for (const m of legMeshesR)  m.rotation.x = rightAng;
+      } else {
+        // fallback: roter pivots hvis vi ingen konkrete meshes finder
+        legPivotL.rotation.x = leftAng;
+        legPivotR.rotation.x = rightAng;
       }
 
-      // opdater fase
       walkPhase += (moving ? 10 : 6) * dt * (0.8 + 0.2 * Math.min(1, speed/state.speedRun));
     }
 
@@ -239,45 +250,36 @@
     (function loop(){
       const dt = Math.min(clock.getDelta(), 1/30);
 
-      // retning og hastighed
       const dir = inputDir();
       const maxSpeed = (keys.get("shift") || keys.get("shiftleft") || keys.get("shiftright")) ? state.speedRun : state.speedWalk;
 
-      // simpel acceleration/dæmpning på plan
+      // acceleration/dæmpning
       state.vel.x = THREE.MathUtils.lerp(state.vel.x, dir.x * maxSpeed, 1 - Math.exp(-state.damping * dt));
       state.vel.z = THREE.MathUtils.lerp(state.vel.z, dir.z * maxSpeed, 1 - Math.exp(-state.damping * dt));
-      // ingen gravity – vi kører på plant gulv
 
       // opdater position
       state.pos.x += state.vel.x * dt;
       state.pos.z += state.vel.z * dt;
 
-      // vend figur i bevægelsesretningen hvis man går frem/til siden
+      // vend figur i bevægelsesretning
       const planarSpeed = Math.hypot(state.vel.x, state.vel.z);
       if (planarSpeed > 0.2) {
-        const lookYaw = Math.atan2(-state.vel.x, -state.vel.z); // -x/-z pga. vores frem-retning
-        // glid roligt mod ønsket yaw
+        const lookYaw = Math.atan2(-state.vel.x, -state.vel.z);
         const wrap = (a)=>Math.atan2(Math.sin(a), Math.cos(a));
         let dy = wrap(lookYaw - state.yaw);
-        state.yaw = state.yaw + dy * Math.min(1, dt*8);
+        state.yaw = state.yaw + dy * Math.min(1, dt*10);
       }
 
-      // placer batman root
+      // placer batman
       batmanRoot.position.set(state.pos.x, 0, state.pos.z);
       batmanRoot.rotation.y = state.yaw;
 
       // ben-animation
       animateLegs(dt, planarSpeed);
 
-      // kamera chase (bag og lidt oppe)
-      const camDist = 5.2;
-      const camHeight = 2.2;
-      const off = new THREE.Vector3(0, camHeight, camDist);
-      off.applyAxisAngle(new THREE.Vector3(0,1,0), state.yaw + camOrbit);
-      const target = new THREE.Vector3(state.pos.x, 1.0, state.pos.z);
-      const desired = target.clone().add(off);
-      camera.position.lerp(desired, 1 - Math.exp(-8 * dt));
-      camera.lookAt(target);
+      // OrbitControls target følger Batman
+      controls.target.set(state.pos.x, 1.0, state.pos.z);
+      controls.update();
 
       renderer.render(scene, camera);
       requestAnimationFrame(loop);
