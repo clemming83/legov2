@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="da">
+<head>
+  <meta charset="utf-8" />
+  <title>Batman OBJ Test – no MTL</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    html, body { height:100%; margin:0; background:#0b0d11; color:#fff; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+    #error { position:fixed; inset:0; display:none; padding:16px; background:rgba(0,0,0,.85); z-index:9999; overflow:auto; }
+    #error h3{margin:0 0 8px 0}
+    #error pre{white-space:pre-wrap; word-break:break-word; background:#111; padding:12px; border:1px solid #333; border-radius:8px}
+    .badge { position:fixed; top:12px; right:12px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.2); padding:6px 10px; border-radius:10px; font-size:12px; }
+    .hint { position:fixed; bottom:12px; left:12px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.2); padding:6px 10px; border-radius:10px; font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="badge">Batman OBJ Test v1</div>
+  <div class="hint">Drej med musen • Scroll for zoom • Hold højre mus for pan</div>
+  <div id="error"><h3>⚠️ Fejl</h3><div id="em"></div><pre id="es"></pre></div>
+
+  <script type="module">
+    // --- Imports (ESM via CDN) ---
+    import * as THREE from "https://esm.sh/three@0.160.0";
+    import { OrbitControls } from "https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js";
+    import { OBJLoader } from "https://esm.sh/three@0.160.0/examples/jsm/loaders/OBJLoader.js";
+
+    // --- Fejl-overlay helper ---
+    const showErr = (msg, stack="")=>{
+      const box = document.getElementById('error');
+      document.getElementById('em').textContent = String(msg || "(ukendt fejl)");
+      document.getElementById('es').textContent = String(stack || "");
+      box.style.display = 'block';
+      console.error("[Batman Test] ", msg, stack);
+    };
+    window.addEventListener('error', e => showErr(e.message, e.error?.stack));
+    window.addEventListener('unhandledrejection', e => {
+      const r = e.reason || {};
+      showErr(r.message || r, r.stack);
+    });
+
+    // --- Basic scene ---
+    const renderer = new THREE.WebGLRenderer({ antialias:true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x0b0d11, 1);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 500);
+    camera.position.set(4, 2.2, 5.5);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    // Lys + gulv + hjælpelinjer
+    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+    sun.position.set(5, 8, 5);
+    sun.castShadow = true;
+    scene.add(sun);
+
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(40,40),
+      new THREE.MeshStandardMaterial({ color:"#2a2f37", roughness:0.95 })
+    );
+    ground.rotation.x = -Math.PI/2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    const grid = new THREE.GridHelper(40, 40, 0x3a4150, 0x232833);
+    grid.position.y = 0.001; // lige over gulv for at undgå z-fight
+    scene.add(grid);
+
+    // --- Teksturer (direkte fra textures/, ikke maps/) ---
+    const texLoader = new THREE.TextureLoader();
+    const tFace  = texLoader.load("assets/Batman/textures/decoration/3626d783.png");
+    const tTorso = texLoader.load("assets/Batman/textures/decoration/3814d676.png");
+    if (tFace)  tFace.colorSpace  = THREE.SRGBColorSpace;
+    if (tTorso) tTorso.colorSpace = THREE.SRGBColorSpace;
+
+    // --- OBJ load ---
+    const objLoader = new OBJLoader();
+    objLoader.load(
+      "assets/Batman/Untitled Model.obj",
+      (obj) => {
+        try {
+          obj.name = "BatmanOBJ";
+          obj.traverse((c)=>{
+            if (!c.isMesh) return;
+            c.visible = true;
+            c.castShadow = true;
+            c.receiveShadow = true;
+
+            const mat = new THREE.MeshStandardMaterial({
+              color: (c.material?.color) ? c.material.color.clone() : new THREE.Color("#444"),
+              roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide
+            });
+
+            const n = (c.name || "").toLowerCase();
+            const isHead  = /head|face|mask|helmet/.test(n);
+            const isTorso = /torso|body|chest/.test(n);
+
+            if (isHead && tFace)  { mat.map = tFace;  mat.map.needsUpdate = true; }
+            if (isTorso && tTorso){ mat.map = tTorso; mat.map.needsUpdate = true; }
+
+            c.material = mat;
+          });
+
+          // Skaler til ~1.7 høj
+          const box = new THREE.Box3().setFromObject(obj);
+          const size = new THREE.Vector3(); box.getSize(size);
+          const scale = (size.y > 1e-4) ? (1.7 / size.y) : 1.0;
+          obj.scale.setScalar(scale);
+
+          // Fod-align → fødder på y = 0 (gulv)
+          const box2 = new THREE.Box3().setFromObject(obj);
+          const minY = box2.min.y;
+          obj.position.y += -minY;
+
+          // Vend 180°, så han kigger væk fra kameraet
+          obj.rotation.y = Math.PI;
+
+          scene.add(obj);
+          console.log("[Batman Test] OBJ loaded:", obj);
+        } catch (e) {
+          showErr("Batman model post-process fejlede", e.stack);
+        }
+      },
+      (xhr) => {
+        if (xhr.total) {
+          const pct = (xhr.loaded / xhr.total * 100).toFixed(1);
+          if (Number.isFinite(pct)) console.log(`[Batman Test] Loading ${pct}%`);
+        }
+      },
+      (err) => {
+        showErr("OBJ kunne ikke indlæses. Tjek sti og filnavn.", err?.stack || String(err));
+      }
+    );
+
+    // --- Resize ---
+    window.addEventListener('resize', ()=>{
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // --- Loop ---
+    const clock = new THREE.Clock();
+    (function loop(){
+      const dt = clock.getDelta();
+      controls.update();
+      renderer.render(scene, camera);
+      requestAnimationFrame(loop);
+    })();
+  </script>
+</body>
+</html>
